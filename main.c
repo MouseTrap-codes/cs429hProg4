@@ -174,7 +174,7 @@ static void expandClr(int rD, FILE *fout) {
     fprintf(fout, "\txor r%d, r%d, r%d\n", rD, rD, rD);
 }
 static void expandHalt(FILE *fout) {
-    fprintf(fout, "\ttrap 0\n");
+    fprintf(fout, "\tpriv r0, r0, r0, 0\n");
 }
 static void expandPush(int rD, FILE *fout) {
     fprintf(fout, "\tsubi r31, 8\n");
