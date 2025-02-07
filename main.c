@@ -243,25 +243,40 @@ static void parseMacro(const char *line, FILE *fout) {
     }
 
     if (strcmp(op, "ld") == 0) {
-        // Pattern: optional whitespace, ld, whitespace, r<number>, optional comma, whitespace,
-        // then an immediate (possibly with "0x" prefix) in one capture group.
-        const char *pattern = "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*((0x)?[0-9a-fA-F]+)[[:space:]]*$";
+        /* The regex below accepts an immediate operand that may optionally begin with
+           a colon (indicating a label reference) or not. */
+        const char *pattern = "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*(:?)([0-9a-fA-FxX:]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for ld\n");
             return;
         }
-        if (regexec(&regex, line, 3, matches, 0) == 0) {
+        if (regexec(&regex, line, 4, matches, 0) == 0) {
             char regBuf[16], immBuf[32];
             int rD;
             uint64_t imm;
             int len = matches[1].rm_eo - matches[1].rm_so;
             strncpy(regBuf, line + matches[1].rm_so, len);
             regBuf[len] = '\0';
-            len = matches[2].rm_eo - matches[2].rm_so;
-            strncpy(immBuf, line + matches[2].rm_so, len);
-            immBuf[len] = '\0';
             rD = atoi(regBuf);
-            imm = strtoull(immBuf, NULL, 0);
+            /* The second capture group (matches[2]) captures an optional colon.
+               The actual immediate string is in capture group 3. */
+            len = matches[3].rm_eo - matches[3].rm_so;
+            strncpy(immBuf, line + matches[3].rm_so, len);
+            immBuf[len] = '\0';
+            /* If the immediate string starts with a colon, then it is a label reference.
+               Remove the colon and look up the label's address. */
+            if (immBuf[0] == ':') {
+                LabelAddress *entry = find_label(immBuf+1);
+                if (entry) {
+                    imm = entry->address;
+                } else {
+                    fprintf(stderr, "Error: label %s not found\n", immBuf+1);
+                    regfree(&regex);
+                    return;
+                }
+            } else {
+                imm = strtoull(immBuf, NULL, 0);
+            }
             expandLd(rD, imm, fout);
         } else {
             fprintf(stderr, "Error parsing ld macro: %s\n", line);
@@ -269,7 +284,6 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else if (strcmp(op, "push") == 0) {
-        // Updated pattern: allow an optional trailing comma after the register.
         const char *pattern = "^[[:space:]]*push[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for push\n");
@@ -289,7 +303,6 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else if (strcmp(op, "pop") == 0) {
-        // Updated pattern: allow an optional trailing comma after the register.
         const char *pattern = "^[[:space:]]*pop[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for pop\n");
