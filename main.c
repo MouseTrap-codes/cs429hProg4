@@ -422,7 +422,7 @@ static int is_macro_line(const char *line) {
 /******************************************************************************
  * PASS 2: Process the input file, performing label replacement and macro expansion.
  ******************************************************************************/
-static void pass2(const char *infile, const char *outfile) {
+ static void pass2(const char *infile, const char *outfile) {
     FILE *fin = fopen(infile, "r");
     if (!fin) {
         perror("pass2: fopen input");
@@ -435,18 +435,17 @@ static void pass2(const char *infile, const char *outfile) {
         exit(1);
     }
 
-    int code_section_printed = 0; // Unify all .code sections.
     char line[1024];
     while (fgets(line, sizeof(line), fin)) {
         line[strcspn(line, "\n")] = '\0';
         trim(line);
-        if (!line[0] || line[0] == ';') { continue; }
+        if (!line[0] || line[0] == ';') {
+            continue;
+        }
         // Handle directives.
         if (!strcmp(line, ".code")) {
-            if (!code_section_printed) {
-                fprintf(fout, ".code\n");
-                code_section_printed = 1;
-            }
+            // Output every .code directive as-is (do not merge).
+            fprintf(fout, ".code\n");
             continue;
         }
         if (!strcmp(line, ".data")) {
@@ -461,7 +460,7 @@ static void pass2(const char *infile, const char *outfile) {
         char *colon = strchr(line, ':');
         if (colon) {
             char lbl[50];
-            if (sscanf(colon+1, "%49s", lbl) == 1) {
+            if (sscanf(colon + 1, "%49s", lbl) == 1) {
                 LabelAddress *entry = find_label(lbl);
                 if (entry) {
                     *colon = '\0'; // Cut off at the colon.
@@ -491,6 +490,8 @@ static void pass2(const char *infile, const char *outfile) {
     fclose(fin);
     fclose(fout);
 }
+
+
 
 int main(int argc, char *argv[]) {
     if (argc < 3) {
