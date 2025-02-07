@@ -1,0 +1,22 @@
+.code
+	xor r0, r0, r0
+	ld r5, 4152
+	br r5
+.code
+	priv r3, r4, r0, 3
+	subi r31, 8
+	mov (r31)(0), r1
+	mov r1, (r31)(0)
+	addi r31, 8
+	xor r0, r0, r0
+	addi r1, r0, 4095
+	shftli r1, 12
+	addi r1, r1, 4095
+	shftli r1, 12
+	addi r1, r1, 4095
+	shftli r1, 12
+	addi r1, r1, 4095
+	shftli r1, 4
+	addi r1, r1, 4095
+	shftli r1, 4
+	addi r1, r1, 15
