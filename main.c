@@ -2,6 +2,11 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "uthash.h"
+#include <regex.h>
+#include <ctype.h>
+#include <string.h>
+
+
 
 //// here we implement the hashmap of labels to addresses using uthash ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 typedef struct {
@@ -61,6 +66,48 @@ void free_hashmap() {
     }
 }
 
+/// here we make some regex for the macros ///////////////////////////////////////////////////////////
+
+// match an instruction line to a regex pattern
+int match_regex(const char *pattern, const char *instruction) {
+    regex_t regex;
+    int result;
+
+    // Compile the regex
+    result = regcomp(&regex, pattern, REG_EXTENDED);
+    if (result) {
+        printf("Could not compile regex\n");
+        return 0;
+    }
+
+    // Execute the regex
+    result = regexec(&regex, instruction, 0, NULL, 0);
+    regfree(&regex);  // Free the compiled regex
+
+    return !result;  // Return 1 if it matches, 0 otherwise
+}
+
+// check if any given line is a valid instruction
+int is_valid_instruction(const char *instruction) {
+    regex_t regex;
+    const char *pattern =
+        "^(add|addi|sub|subi|mul|div|and|or|xor|not|shftr|shftri|shftl|shftli|"
+        "br|brr|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt)"
+        "([ \t]+r[0-9]+(,[ \t]*r[0-9]+(,[ \t]*r[0-9]+)?)?[ \t]*(,[ \t]*(:[A-Za-z][A-Za-z0-9]*|[0-9]+))?)?$";
+    
+    int result = regcomp(&regex, pattern, REG_EXTENDED);
+    if (result) {
+        printf("Could not compile regex\n");
+        return 0;
+    }
+
+    result = regexec(&regex, instruction, 0, NULL, 0);
+    regfree(&regex);
+    return !result;  // Return 1 if matched, 0 otherwise.
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 // trim leading and trailing whitespace (in–place)
 void trim(char *s) {
@@ -99,9 +146,10 @@ void pass1(const char *input_filename) {
             continue;
         
         // skip comment lines (those that start with a semicolon)
-        if (line[0] == ';')
+        if (line[0] == ';') {
             continue;
-        
+        }
+
         // check for directives (.code and .data)
         if (line[0] == '.') {
             if (strncmp(line, ".code", 5) == 0) {
@@ -113,13 +161,13 @@ void pass1(const char *input_filename) {
             continue;
         }
         
-        // Process label definitions (lines starting with ':')
+        // process label definitions (lines starting with ':')
         if (line[0] == ':') {
             char label[50];
             // extract the label name (ignoring the colon)
             sscanf(line + 1, "%s", label);
             // The label gets the current address based on the section
-            int addr = (currentSection == CODE) ? codeAddress : dataAddress;
+            int addr = programCounter;
             add_label(label, addr);
             // Label definitions do not increment the address counter.
             continue;
@@ -128,10 +176,23 @@ void pass1(const char *input_filename) {
         // If the line is not a label or a directive, then it is either an instruction (in code)
         // or a data item (in data), so update the corresponding address counter.
         if (currentSection == CODE) {
-            programCounter += 4;  // each code instruction is 4 bytes
+            if (is_valid_instruction(line)) { // first we check if the current line is a valid expansion
+                // need to check for special macros with multiline expansions
+                if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line)) {
+                    programCounter += 48; // 12 line macro expansion
+                } else if (match_regex("push\\s+r[0-9]+", line)) {
+                    programCounter += 8; // 2 line macro expansion
+                } else if (match_regex("pop\\s+r[0-9]+", line)) {
+                    programCounter += 8; // 2 line macro expansion
+                } else {
+                    programCounter += 4; // normal instruction
+                }
+            } else {
+                exit(-1); // this line is not a valid instruction -> exit program!
+            }
         } else if (currentSection == DATA) {
-            dataAddress += 8;  // each data item is 8 bytes
-        }
+            programCounter += 8;  // each data item is 8 bytes
+        } 
     }
     
     fclose(fin);
@@ -144,7 +205,17 @@ void pass1(const char *input_filename) {
 
 
 int main(int argc, char *argv[]) {
-    char buffer[1024];
-    File *file = fopen ("data.txt". "r");
+    // test pass 1
+    // Run Pass 1 to calculate label addresses.
+    pass1(argv[1]);
+    
+    // For demonstration, print out the label-address pairs.
+    LabelAddress *entry, *tmp;
+    HASH_ITER(hh, hashmap, entry, tmp) {
+        printf("Label: %s, Address: %d\n", entry->label, entry->address);
+    }
+    
+    free_hashmap();
+    return 0;
 
 }

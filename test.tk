@@ -1,4 +1,4 @@
-code
+.code
 clr r0
 ; the above line is a macro, it sets the value of register r0 to 0!
 ld r5, :L1
