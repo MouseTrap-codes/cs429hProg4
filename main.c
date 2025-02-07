@@ -195,7 +195,7 @@ void expandIn(int rD, int rS, FILE* output) {
 }
 
 void expandOut(int rD, int rS, FILE* output) {
-    fprintf(output, "\tpriv r%d, r%d, 0, 3\n", rD, rS);
+    fprintf(output, "\tpriv r%d, r%d, 0, 4\n", rD, rS);
 }
 
 void expandClr(int rD, FILE* output) {
