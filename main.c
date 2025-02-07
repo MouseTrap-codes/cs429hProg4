@@ -213,6 +213,8 @@ void pass2(const char *input_filename, const char *output_filename) {
     }
 
     char line[1024];
+    int in_code_section = 0;
+
     while (fgets(line, sizeof(line), fin)) {
         // Trim the line and skip empty or comment lines
         line[strcspn(line, "\n")] = '\0';
@@ -221,7 +223,32 @@ void pass2(const char *input_filename, const char *output_filename) {
             continue;
         }
 
-        // Check if the line contains a label reference using regex or simple parsing
+        // Handle .code directive
+        if (strcmp(line, ".code") == 0) {
+            if (in_code_section) {
+                // Skip this .code since we are already in one
+                continue;
+            } else {
+                // Start a new .code section
+                fprintf(fout, ".code\n");
+                in_code_section = 1;
+                continue;
+            }
+        }
+
+        // Handle .data directive (reset in_code_section flag)
+        if (strcmp(line, ".data") == 0) {
+            fprintf(fout, ".data\n");
+            in_code_section = 0;
+            continue;
+        }
+
+        // Skip lines that are just labels (e.g., :LABEL)
+        if (line[0] == ':' && strlen(line) > 1 && strspn(line + 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") == strlen(line + 1)) {
+            continue;
+        }
+
+        // Check for label references and replace them with decimal addresses
         char *label_start = strstr(line, ":");
         if (label_start) {
             char label[50];
@@ -230,17 +257,17 @@ void pass2(const char *input_filename, const char *output_filename) {
             // Look up the label in the hashmap
             LabelAddress *entry = find_label(label);
             if (entry) {
-                // Replace the label with its hexadecimal address
+                // Replace the label with its decimal address
                 char buffer[1024];
-                *label_start = '\0'; // Split the line before the label
-                snprintf(buffer, sizeof(buffer), "%s0x%x", line, entry->address);
+                *label_start = '\0';  // Split the line before the label
+                snprintf(buffer, sizeof(buffer), "%s%d", line, entry->address);
                 fprintf(fout, "%s\n", buffer);
             } else {
                 printf("Warning: Label '%s' not found.\n", label);
                 fprintf(fout, "%s\n", line);  // Preserve original if not found
             }
         } else {
-            // If no label, simply write the line to output
+            // No label reference, just write the line as is
             fprintf(fout, "%s\n", line);
         }
     }
@@ -248,6 +275,7 @@ void pass2(const char *input_filename, const char *output_filename) {
     fclose(fin);
     fclose(fout);
 }
+
 
     
 
@@ -259,12 +287,13 @@ int main(int argc, char *argv[]) {
     // test pass 1
     // Run Pass 1 to calculate label addresses.
     pass1(argv[1]);
+    pass2(argv[1], argv[2]);
     
-    // For demonstration, print out the label-address pairs.
-    LabelAddress *entry, *tmp;
-    HASH_ITER(hh, hashmap, entry, tmp) {
-        printf("Label: %s, Address: %d\n", entry->label, entry->address);
-    }
+    // // For demonstration, print out the label-address pairs.
+    // LabelAddress *entry, *tmp;
+    // HASH_ITER(hh, hashmap, entry, tmp) {
+    //     printf("Label: %s, Address: %d\n", entry->label, entry->address);
+    // }
     
     free_hashmap();
     return 0;
