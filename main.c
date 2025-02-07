@@ -6,9 +6,9 @@
 #include <ctype.h>
 #include <string.h>
 
-//--------------------------------------------------------------
-// Hashmap of labels to addresses using uthash
-//--------------------------------------------------------------
+
+
+//// here we implement the hashmap of labels to addresses using uthash ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 typedef struct {
     char label[50];
     int address;
@@ -17,6 +17,7 @@ typedef struct {
 
 LabelAddress *hashmap = NULL;
 
+// add a new label address pair to the hashmap
 void add_label(char *label, int address) {
     LabelAddress *entry = (LabelAddress *)malloc(sizeof(LabelAddress));
     if (entry == NULL) {
@@ -29,12 +30,14 @@ void add_label(char *label, int address) {
     HASH_ADD_STR(hashmap, label, entry);
 }
 
+// lookup a label address pair
 LabelAddress *find_label(char *label) {
     LabelAddress *entry;
     HASH_FIND_STR(hashmap, label, entry);
     return entry;
 }
 
+// update a label address pair -> VERY IMPORTANT as this is how we end up matching the addresses to the labels
 void update_label(char *label, int new_address) {
     LabelAddress *entry = find_label(label);
     if (entry != NULL) {
@@ -45,6 +48,7 @@ void update_label(char *label, int new_address) {
     }
 }
 
+// delete a label - cause why not
 void delete_label(char *label) {
     LabelAddress *entry = find_label(label);
     if (entry != NULL) {
@@ -53,6 +57,7 @@ void delete_label(char *label) {
     }
 }
 
+// we free the hashmap after the program is completed so we don't get any memory leaks
 void free_hashmap() {
     LabelAddress *current, *tmp;
     HASH_ITER(hh, hashmap, current, tmp) {
@@ -61,28 +66,33 @@ void free_hashmap() {
     }
 }
 
-//--------------------------------------------------------------
-// Regex helper functions
-//--------------------------------------------------------------
+/// here we make some regex for the macros ///////////////////////////////////////////////////////////
+
+// match an instruction line to a regex pattern
 int match_regex(const char *pattern, const char *instruction) {
     regex_t regex;
     int result;
 
+    // Compile the regex
     result = regcomp(&regex, pattern, REG_EXTENDED);
     if (result) {
         printf("Could not compile regex\n");
         return 0;
     }
+
+    // Execute the regex
     result = regexec(&regex, instruction, 0, NULL, 0);
-    regfree(&regex);
-    return !result;  // returns 1 if matches, 0 otherwise
+    regfree(&regex);  // Free the compiled regex
+
+    return !result;  // Return 1 if it matches, 0 otherwise
 }
 
+// check if any given line is a valid instruction
 int is_valid_instruction(const char *instruction) {
     regex_t regex;
     const char *pattern =
         "^(add|addi|sub|subi|mul|div|and|or|xor|not|shftr|shftri|shftl|shftli|"
-        "br|brr|brr_l|brr_r|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt)"
+        "br|brr|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt)"
         "([ \t]+r[0-9]+(,[ \t]*r[0-9]+(,[ \t]*r[0-9]+)?)?[ \t]*(,[ \t]*(:[A-Za-z][A-Za-z0-9]*|[0-9]+))?)?$";
     
     int result = regcomp(&regex, pattern, REG_EXTENDED);
@@ -90,19 +100,22 @@ int is_valid_instruction(const char *instruction) {
         printf("Could not compile regex\n");
         return 0;
     }
+
     result = regexec(&regex, instruction, 0, NULL, 0);
     regfree(&regex);
-    return !result;
+    return !result;  // Return 1 if matched, 0 otherwise.
 }
 
-//--------------------------------------------------------------
-// Utility: trim leading and trailing whitespace (in–place)
-//--------------------------------------------------------------
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// trim leading and trailing whitespace (in–place)
 void trim(char *s) {
     char *p = s;
     while (isspace((unsigned char)*p)) p++;
     if (p != s)
         memmove(s, p, strlen(p) + 1);
+    // trim trailing whitespace
     size_t len = strlen(s);
     while (len > 0 && isspace((unsigned char)s[len-1])) {
         s[len-1] = '\0';
@@ -110,9 +123,6 @@ void trim(char *s) {
     }
 }
 
-//--------------------------------------------------------------
-// Pass 1: Compute label addresses.
-//--------------------------------------------------------------
 void pass1(const char *input_filename) {
     FILE *fin = fopen(input_filename, "r");
     if (!fin) {
@@ -120,59 +130,75 @@ void pass1(const char *input_filename) {
         exit(1);
     }
     
+    // keep track of track of the current section.
     typedef enum { NONE, CODE, DATA } Section;
     Section currentSection = NONE;
     
     int programCounter = 4096;
-    char line[1024];
+  
     
+    char line[1024];
     while (fgets(line, sizeof(line), fin)) {
+        // Remove the newline and trim the line
         line[strcspn(line, "\n")] = '\0';
         trim(line);
         if (strlen(line) == 0)
             continue;
-        if (line[0] == ';')
-            continue;
         
-        // Directives: .code or .data
+        // skip comment lines (those that start with a semicolon)
+        if (line[0] == ';') {
+            continue;
+        }
+
+        // check for directives (.code and .data)
         if (line[0] == '.') {
             if (strncmp(line, ".code", 5) == 0) {
                 currentSection = CODE;
             } else if (strncmp(line, ".data", 5) == 0) {
                 currentSection = DATA;
             }
+            // directives do not update the address counters.
             continue;
         }
         
-        // Process label definitions (lines starting with ':')
+        // process label definitions (lines starting with ':')
         if (line[0] == ':') {
             char label[50];
+            // extract the label name (ignoring the colon)
             sscanf(line + 1, "%s", label);
-            add_label(label, programCounter);
+            // The label gets the current address based on the section
+            int addr = programCounter;
+            add_label(label, addr);
+            // Label definitions do not increment the address counter.
             continue;
         }
         
-        // For instructions or data items, update the program counter.
+        // If the line is not a label or a directive, then it is either an instruction (in code)
+        // or a data item (in data), so update the corresponding address counter.
         if (currentSection == CODE) {
-            if (is_valid_instruction(line)) {
-                if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line))
-                    programCounter += 48; // macro expands to 12 lines (48 bytes)
-                else if (match_regex("push\\s+r[0-9]+", line))
-                    programCounter += 8;  // macro expands to 2 lines (8 bytes)
-                else if (match_regex("pop\\s+r[0-9]+", line))
-                    programCounter += 8;  // macro expands to 2 lines (8 bytes)
-                else
-                    programCounter += 4;  // normal instruction: 4 bytes
+            if (is_valid_instruction(line)) { // first we check if the current line is a valid expansion
+                // need to check for special macros with multiline expansions
+                if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line)) {
+                    programCounter += 48; // 12 line macro expansion
+                } else if (match_regex("push\\s+r[0-9]+", line)) {
+                    programCounter += 8; // 2 line macro expansion
+                } else if (match_regex("pop\\s+r[0-9]+", line)) {
+                    programCounter += 8; // 2 line macro expansion
+                } else {
+                    programCounter += 4; // normal instruction
+                }
             } else {
-                exit(-1);  // invalid instruction line
+                exit(-1); // this line is not a valid instruction -> exit program!
             }
         } else if (currentSection == DATA) {
             programCounter += 8;  // each data item is 8 bytes
-        }
+        } 
     }
+    
     fclose(fin);
 }
 
+//// ignore this for now
 //--------------------------------------------------------------
 // Macro expansion functions
 //--------------------------------------------------------------
@@ -318,130 +344,106 @@ void parseMacro(const char *line, FILE *output) {
         fprintf(output, "\t%s\n", line);
     }
 }
+/////// ignore this for now
 
-//--------------------------------------------------------------
-// Pass 2: Process the input file, expand macros, and resolve labels.
-//--------------------------------------------------------------
 void pass2(const char *input_filename, const char *output_filename) {
     FILE *fin = fopen(input_filename, "r");
     if (!fin) {
         perror("Error opening input file");
         exit(1);
     }
+
     FILE *fout = fopen(output_filename, "w");
     if (!fout) {
         perror("Error opening output file");
         fclose(fin);
         exit(1);
     }
-    
+
     char line[1024];
     int in_code_section = 0;
-    int currentAddress = 0;  // will be set to 4096 when .code is seen
-    
+
     while (fgets(line, sizeof(line), fin)) {
+        // Trim the line and skip empty or comment lines
         line[strcspn(line, "\n")] = '\0';
         trim(line);
-        if (strlen(line) == 0 || line[0] == ';')
+        if (strlen(line) == 0 || line[0] == ';') {
             continue;
-        
-        // Handle directives.
+        }
+
+        // Handle .code directive
         if (strcmp(line, ".code") == 0) {
-            in_code_section = 1;
-            currentAddress = 4096;
-            fprintf(fout, ".code\n");
-            continue;
+            if (in_code_section) {
+                // Skip this .code since we are already in one
+                continue;
+            } else {
+                // Start a new .code section
+                fprintf(fout, ".code\n");
+                in_code_section = 1;
+                continue;
+            }
         }
+
+        // Handle .data directive (reset in_code_section flag)
         if (strcmp(line, ".data") == 0) {
-            in_code_section = 0;
             fprintf(fout, ".data\n");
+            in_code_section = 0;
             continue;
         }
-        
-        // Skip label definitions.
-        if (line[0] == ':' &&
-            strlen(line) > 1 &&
-            strspn(line + 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") == strlen(line + 1))
-        {
+
+        // Skip lines that are just labels (e.g., :LABEL)
+        if (line[0] == ':' && strlen(line) > 1 && strspn(line + 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") == strlen(line + 1)) {
             continue;
         }
-        
-        if (in_code_section) {
-            int lineAddress = currentAddress;  // record starting address for this instruction
-            
-            /* If the instruction is one of our macro instructions (in, out, clr, halt, push, pop, ld, mov),
-               let parseMacro() expand it.
-            */
-            if (match_regex("^(in|out|clr|halt|push|pop|ld|mov)\\b", line)) {
-                parseMacro(line, fout);
-            }
-            /* Otherwise, if the line contains a label reference (an operand starting with a colon)
-               then do replacement. For branch relative instructions (brr, brr_l, brr_r)
-               compute a relative offset based on the current address.
-            */
-            else if (strchr(line, ':') != NULL) {
-                char mnemonic[16];
-                sscanf(line, "%15s", mnemonic);
-                char *colon = strchr(line, ':');
-                char label[50];
-                sscanf(colon + 1, "%s", label);
-                LabelAddress *entry = find_label(label);
-                if (entry) {
-                    if (strcmp(mnemonic, "brr") == 0 ||
-                        strcmp(mnemonic, "brr_l") == 0 ||
-                        strcmp(mnemonic, "brr_r") == 0)
-                    {
-                        int offset = entry->address - lineAddress;
-                        if (strcmp(mnemonic, "brr_l") == 0 && offset > 0)
-                            offset = -offset;
-                        else if (strcmp(mnemonic, "brr_r") == 0 && offset < 0)
-                            offset = -offset;
-                        *colon = '\0';
-                        fprintf(fout, "\t%s %d\n", line, offset);
-                    } else {
-                        *colon = '\0';
-                        fprintf(fout, "\t%s %d\n", line, entry->address);
-                    }
-                } else {
-                    fprintf(fout, "\t%s\n", line);
-                }
-            }
-            else {
-                // Otherwise, just output the instruction unchanged.
-                fprintf(fout, "\t%s\n", line);
-            }
-            
-            // Update currentAddress using the same rules as in pass1.
-            if (is_valid_instruction(line)) {
-                if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line))
-                    currentAddress += 48;
-                else if (match_regex("push\\s+r[0-9]+", line))
-                    currentAddress += 8;
-                else if (match_regex("pop\\s+r[0-9]+", line))
-                    currentAddress += 8;
-                else
-                    currentAddress += 4;
+
+        // Check for label references and replace them with decimal addresses
+        char *label_start = strstr(line, ":");
+        if (label_start) {
+            char label[50];
+            sscanf(label_start + 1, "%s", label);
+
+            // Look up the label in the hashmap
+            LabelAddress *entry = find_label(label);
+            if (entry) {
+                // Replace the label with its decimal address
+                char buffer[1024];
+                *label_start = '\0';  // Split the line before the label
+                snprintf(buffer, sizeof(buffer), "\t%s%d", line, entry->address);
+                fprintf(fout, "%s\n", buffer);
+            } else {
+                printf("Warning: Label '%s' not found.\n", label);
+                fprintf(fout, "\t%s\n", line);  // Preserve original if not found
             }
         } else {
-            // In data section, simply output the line.
+            // No label reference, just write the line as is
             fprintf(fout, "\t%s\n", line);
         }
     }
-    
+
     fclose(fin);
     fclose(fout);
 }
 
-//--------------------------------------------------------------
-// Main
-//--------------------------------------------------------------
+
+    
+
+
+
+
+
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <inputfile> <outputfile>\n", argv[0]);
-        return 1;
-    }
+    // test pass 1
+    // Run Pass 1 to calculate label addresses.
     pass1(argv[1]);
     pass2(argv[1], argv[2]);
+    
+    // // For demonstration, print out the label-address pairs.
+    // LabelAddress *entry, *tmp;
+    // HASH_ITER(hh, hashmap, entry, tmp) {
+    //     printf("Label: %s, Address: %d\n", entry->label, entry->address);
+    // }
+    
     free_hashmap();
     return 0;
+
 }
