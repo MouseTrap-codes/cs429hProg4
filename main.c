@@ -198,6 +198,57 @@ void pass1(const char *input_filename) {
     fclose(fin);
 }
 
+void pass2(const char *input_filename, const char *output_filename) {
+    FILE *fin = fopen(input_filename, "r");
+    if (!fin) {
+        perror("Error opening input file");
+        exit(1);
+    }
+
+    FILE *fout = fopen(output_filename, "w");
+    if (!fout) {
+        perror("Error opening output file");
+        fclose(fin);
+        exit(1);
+    }
+
+    char line[1024];
+    while (fgets(line, sizeof(line), fin)) {
+        // Trim the line and skip empty or comment lines
+        line[strcspn(line, "\n")] = '\0';
+        trim(line);
+        if (strlen(line) == 0 || line[0] == ';') {
+            continue;
+        }
+
+        // Check if the line contains a label reference using regex or simple parsing
+        char *label_start = strstr(line, ":");
+        if (label_start) {
+            char label[50];
+            sscanf(label_start + 1, "%s", label);
+
+            // Look up the label in the hashmap
+            LabelAddress *entry = find_label(label);
+            if (entry) {
+                // Replace the label with its hexadecimal address
+                char buffer[1024];
+                *label_start = '\0'; // Split the line before the label
+                snprintf(buffer, sizeof(buffer), "%s0x%x", line, entry->address);
+                fprintf(fout, "%s\n", buffer);
+            } else {
+                printf("Warning: Label '%s' not found.\n", label);
+                fprintf(fout, "%s\n", line);  // Preserve original if not found
+            }
+        } else {
+            // If no label, simply write the line to output
+            fprintf(fout, "%s\n", line);
+        }
+    }
+
+    fclose(fin);
+    fclose(fout);
+}
+
     
 
 
