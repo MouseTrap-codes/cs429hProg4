@@ -13,9 +13,10 @@
 	shftli r5, 4
 	addi r5, 8
 	br r5
+.code
 	priv r3, r4, r0, 3
+	mov (r31)(-8), r1
 	subi r31, 8
-	mov (r31)(0), r1
 	mov r1, (r31)(0)
 	addi r31, 8
 	xor r1, r1, r1

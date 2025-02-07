@@ -4,8 +4,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <regex.h>
-#include <errno.h>      // For ERANGE
-#include <limits.h>     // For LONG_MAX, etc.
+#include <errno.h>
 #include "uthash.h"
 
 /******************************************************************************
@@ -90,7 +89,8 @@ static int parse_unsigned_12_bit(const char *str, int *valueOut) {
 }
 
 /******************************************************************************
- * Pass 1 Helpers for Macro Detection
+ * Macros used in PASS 1 to detect expansions (e.g., ld, push, pop)
+ * so we can increment PC by the correct byte-count.
  ******************************************************************************/
 static int starts_with_ld(const char *line) {
     while (isspace((unsigned char)*line)) { line++; }
@@ -126,114 +126,285 @@ static int starts_with_pop(const char *line) {
 }
 
 /******************************************************************************
- * Check (most) instructions that have register + immediate forms
- *   e.g. addi, subi, shftri, shftli, mov
+ * validate_brr: brr has two forms:
+ *   brr rX  (pc ← pc + rX)  opcode 0x9
+ *   brr L   (pc ← pc + L)   opcode 0xa, L can be negative
  ******************************************************************************/
-static int validate_instruction_immediate(const char *line) {
-    char op[32], regPart[32], immPart[64];
-    int count = sscanf(line, "%31s %31s %63[^\n]", op, regPart, immPart);
+static int validate_brr(const char *line) {
+    char op[32], operand[64];
+    int count = sscanf(line, "%31s %63[^\n]", op, operand);
     if (count < 2) {
-        return 1; // Let the broader check catch it if it's truly invalid
+        fprintf(stderr, "Error: 'brr' missing operand: %s\n", line);
+        return 0;
     }
-
-    // The instructions we care about here:
-    //   addi, subi, shftri, shftli -> must have an unsigned 12-bit immediate
-    //   mov (with literal)         -> must have a signed 12-bit immediate
-    // (We EXCLUDE brr here, because brr has two distinct forms: brr rX or brr L.)
-    int requireUnsigned12 = 0;
-    int requireSigned12   = 0;
-
-    if (!strcmp(op, "addi") || !strcmp(op, "subi") ||
-        !strcmp(op, "shftri") || !strcmp(op, "shftli")) {
-        requireUnsigned12 = 1;
-    }
-    else if (!strcmp(op, "mov")) {
-        // Tinker’s "mov rd, L" uses 12 bits for L (signed).
-        requireSigned12 = 1;
-    }
-    else {
-        // Not an instruction we handle in this function
+    if (operand[0] == 'r') {
+        // brr rX form
+        int rd = atoi(operand + 1);
+        if (rd < 0 || rd > 31) {
+            fprintf(stderr, "Error: 'brr r%d' invalid register.\n", rd);
+            return 0;
+        }
+        return 1; // valid
+    } else {
+        // brr L form => L is signed 12-bit
+        int val;
+        if (!parse_signed_12_bit(operand, &val)) {
+            fprintf(stderr, "Error: 'brr' literal out of [-2048..2047]: %s\n", operand);
+            return 0;
+        }
         return 1;
     }
+}
 
-    // Check register range
-    if (regPart[0] != 'r') {
+/******************************************************************************
+ * validate_mov: Tinker has 4 forms of mov:
+ *  1) mov rD, (rS)(L)   => 0x10
+ *  2) mov rD, rS        => 0x11
+ *  3) mov rD, L         => 0x12
+ *  4) mov (rD)(L), rS   => 0x13
+ * We'll parse them in pass1 to ensure correct usage and immediate range.
+ ******************************************************************************/
+static int validate_mov(const char *line) {
+    // We'll do a rough parse:
+    //   mov   [dest], [source or imm or memory form]
+    // Some possible lines:
+    //   mov r5, (r6)(-12)
+    //   mov r5, r6
+    //   mov r5, 100
+    //   mov (r5)(-8), r6
+    // We can do a simple check for '(' or 'r' or immediate.
+    // The code below is a simplistic approach; you can adapt for more robust parsing.
+
+    // Quick tokenize
+    char op[32], part1[64], part2[64];
+    // Example: "mov r5, (r6)(12)" => op="mov", part1="r5,", part2="(r6)(12)"
+    // We'll trim extra commas/spaces after splitting.
+    int count = sscanf(line, "%31s %63[^,], %63[^\n]", op, part1, part2);
+
+    // If count < 2 => definitely invalid "mov"
+    if (count < 2) {
+        fprintf(stderr, "Error: incomplete 'mov' instruction: %s\n", line);
         return 0;
     }
-    int rd = atoi(regPart + 1);
-    if (rd < 0 || rd > 31) {
-        fprintf(stderr, "Error: register out of range (0-31) in line: %s\n", line);
+
+    // If we didn't parse part2, it might be that there's no comma in the line:
+    //   e.g. "mov (r5)(4) r6" => That wouldn't match the pattern with comma
+    // Let's do an alternative if count=2
+    if (count == 2) {
+        // We'll see if there's a space separation
+        // e.g. "mov (r5)(4) r6" => part1="(r5)(4) r6"
+        // We can re-split part1 by whitespace
+        char second[64] = {0};
+        if (sscanf(part1, "%63s %63s", part1, second) == 2) {
+            strcpy(part2, second);
+            count = 3;
+        }
+    }
+
+    // Now we have possibly 3 tokens: op, part1, part2
+    // Remove trailing spaces or commas from part1, part2
+    {
+        // trim front
+        char *p = part1; 
+        while (isspace((unsigned char)*p) || *p == ',') p++;
+        if (p != part1) memmove(part1, p, strlen(p)+1);
+        p = part2;
+        while (isspace((unsigned char)*p) || *p == ',') p++;
+        if (p != part2) memmove(part2, p, strlen(p)+1);
+        // trim end
+        for (int i = (int)strlen(part1)-1; i >= 0; i--) {
+            if (isspace((unsigned char)part1[i]) || part1[i] == ',') part1[i] = '\0'; else break;
+        }
+        for (int i = (int)strlen(part2)-1; i >= 0; i--) {
+            if (isspace((unsigned char)part2[i]) || part2[i] == ',') part2[i] = '\0'; else break;
+        }
+    }
+
+    // Now let's see which form it might be:
+    //  (a) mov rD, rS
+    //  (b) mov rD, L
+    //  (c) mov rD, (rS)(L)
+    //  (d) mov (rD)(L), rS
+    //
+    // We can detect (d) if part1 starts with '(' or we see "(". 
+    // We detect (c) if part2 starts with '('
+    // We detect (a) if both part1 and part2 are registers
+    // We detect (b) if part1 is register, part2 is immediate
+    //
+    // We'll do it step by step.
+
+    // If "part1" starts with '(' => form (d)
+    if (part1[0] == '(') {
+        // (d) mov (rD)(L), rS
+        // part1 => e.g. "(r5)(-8)"
+        // part2 => e.g. "r6"
+        // check part2 is register
+        if (part2[0] != 'r') {
+            fprintf(stderr, "Error: 'mov (rD)(L), rS' => 'rS' is not a register? %s\n", line);
+            return 0;
+        }
+        int rS = atoi(part2+1);
+        if (rS < 0 || rS > 31) {
+            fprintf(stderr, "Error: register out of range in mov (rD)(L), rS => %s\n", line);
+            return 0;
+        }
+        // parse part1 => e.g. "(r5)(-8)"
+        // find rD in the parentheses
+        // We'll do a quick approach with a small regex or manual parse
+        // Example manual parse:
+        //   skip '(' => see 'r5' => skip 'r' => 5 => skip ')' => see '(...)'
+        char *p = strstr(part1, "r");
+        if (!p) {
+            fprintf(stderr, "Error: 'mov (rD)(L), rS': can't find register in %s\n", part1);
+            return 0;
+        }
+        int rD = atoi(p+1);
+        if (rD < 0 || rD > 31) {
+            fprintf(stderr, "Error: 'mov (rD)(L), rS': register out of range => %s\n", line);
+            return 0;
+        }
+        // now skip over something like "r5)" => find next '('
+        p = strchr(p, '(');
+        if (!p) {
+            fprintf(stderr, "Error: 'mov (rD)(L), rS': missing offset => %s\n", line);
+            return 0;
+        }
+        // p should point to "(" that encloses the offset
+        p++; // skip '('
+        char offsetBuf[32];
+        int i=0;
+        while (*p && *p != ')' && i < 31) {
+            offsetBuf[i++] = *p++;
+        }
+        offsetBuf[i] = '\0';
+        // offsetBuf might be "-8" or "12"
+        // We'll assume signed 12-bit
+        int offsetVal;
+        if (!parse_signed_12_bit(offsetBuf, &offsetVal)) {
+            fprintf(stderr, "Error: offset out of [-2048..2047] in 'mov (rD)(L), rS' => %s\n", offsetBuf);
+            return 0;
+        }
+        // If we get here, it passes validation
+        return 1; 
+    }
+
+    // Otherwise, part1 is presumably "rD"
+    if (part1[0] != 'r') {
+        fprintf(stderr, "Error: mov => expected 'rD' or '(rD)(L)' => got: %s\n", part1);
+        return 0;
+    }
+    int rD = atoi(part1+1);
+    if (rD < 0 || rD > 31) {
+        fprintf(stderr, "Error: register out of range in mov => %s\n", line);
         return 0;
     }
 
-    // Must have at least 3 tokens for register + immediate
+    // If count < 3 => e.g. "mov r5" => incomplete
     if (count < 3) {
-        fprintf(stderr, "Error: missing immediate in line: %s\n", line);
+        fprintf(stderr, "Error: incomplete 'mov' => missing second operand: %s\n", line);
         return 0;
     }
 
-    // immPart might have a leading comma/spaces
-    char *p = immPart;
-    while (*p == ',' || isspace((unsigned char)*p)) {
-        p++;
+    // Now check part2
+    if (part2[0] == 'r') {
+        // (a) mov rD, rS
+        // e.g. "mov r5, r6"
+        int rS = atoi(part2+1);
+        if (rS < 0 || rS > 31) {
+            fprintf(stderr, "Error: register out of range => %s\n", line);
+            return 0;
+        }
+        // Valid
+        return 1;
     }
+    else if (part2[0] == '(') {
+        // (c) mov rD, (rS)(L)
+        // parse the memory form
+        // e.g. part2="(r6)(-8)"
+        char *p = strstr(part2, "r");
+        if (!p) {
+            fprintf(stderr, "Error: can't find register in 'mov rD, (rS)(L)' => %s\n", line);
+            return 0;
+        }
+        int rS = atoi(p+1);
+        if (rS < 0 || rS > 31) {
+            fprintf(stderr, "Error: register out of range in 'mov rD, (rS)(L)' => %s\n", line);
+            return 0;
+        }
+        p = strchr(p, '(');
+        if (!p) {
+            fprintf(stderr, "Error: missing offset => %s\n", line);
+            return 0;
+        }
+        p++; // skip '('
+        char offsetBuf[32];
+        int i=0;
+        while (*p && *p != ')' && i < 31) {
+            offsetBuf[i++] = *p++;
+        }
+        offsetBuf[i] = '\0';
+        // parse offset as signed 12-bit
+        int offsetVal;
+        if (!parse_signed_12_bit(offsetBuf, &offsetVal)) {
+            fprintf(stderr, "Error: offset out of [-2048..2047] => %s\n", offsetBuf);
+            return 0;
+        }
+        return 1; 
+    }
+    else {
+        // (b) mov rD, L
+        // We assume an unsigned 12-bit literal for bits 52..63
+        // e.g. "mov r5, 100"
+        int val;
+        if (!parse_unsigned_12_bit(part2, &val)) {
+            fprintf(stderr, "Error: mov rD, L => L out of [0..4095]: %s\n", part2);
+            return 0;
+        }
+        return 1;
+    }
+}
 
-    if (requireUnsigned12) {
+/******************************************************************************
+ * For addi, subi, shftri, shftli => 0..4095
+ * For everything else with literal => separate checks (brr, mov, etc.)
+ ******************************************************************************/
+static int validate_instruction_immediate(const char *line) {
+    // We'll do a quick parse: opcode, rD, immediate
+    char op[32], rdPart[32], immPart[64];
+    int count = sscanf(line, "%31s %31s %63[^\n]", op, rdPart, immPart);
+    if (count < 2) return 1; // we won't call it invalid here
+
+    if (!strcmp(op, "addi") || !strcmp(op, "subi") || 
+        !strcmp(op, "shftri") || !strcmp(op, "shftli")) 
+    {
+        // Must have an unsigned 12-bit immediate
+        if (count < 3) {
+            fprintf(stderr, "Error: missing immediate => %s\n", line);
+            return 0;
+        }
+        // rdPart => "rD"
+        if (rdPart[0] != 'r') return 0;
+        int rD = atoi(rdPart+1);
+        if (rD < 0 || rD > 31) {
+            fprintf(stderr, "Error: register out of range => %s\n", line);
+            return 0;
+        }
+        // immPart might have a leading comma
+        char *p = immPart;
+        while (*p == ',' || isspace((unsigned char)*p)) p++;
         int val;
         if (!parse_unsigned_12_bit(p, &val)) {
-            fprintf(stderr, "Error: %s immediate out of [0..4095] range or invalid: %s\n", op, p);
+            fprintf(stderr, "Error: %s => immediate out of [0..4095]: %s\n", op, p);
             return 0;
         }
-    } else if (requireSigned12) {
-        int val;
-        if (!parse_signed_12_bit(p, &val)) {
-            fprintf(stderr, "Error: %s immediate out of [-2048..2047] range or invalid: %s\n", op, p);
-            return 0;
-        }
+        return 1;
     }
+    // fallback => do nothing
     return 1;
 }
 
 /******************************************************************************
- * Special pass1 check for brr
- *   brr rX => pc ← pc + rX
- *   brr L  => pc ← pc + L (signed 12-bit)
- ******************************************************************************/
-static int validate_brr(const char *line) {
-    // We expect either:
-    //   brr rXX
-    // OR
-    //   brr <someSignedImm>
-    char op[32], operand[64];
-    int count = sscanf(line, "%31s %63[^\n]", op, operand);
-    if (count < 2) {
-        // Means "brr" with no operand -> error
-        fprintf(stderr, "Error: 'brr' missing operand: %s\n", line);
-        return 0;
-    }
-    // If the operand starts with 'r', assume register form
-    if (operand[0] == 'r') {
-        // brr rX
-        int rd = atoi(operand + 1);
-        if (rd < 0 || rd > 31) {
-            fprintf(stderr, "Error: 'brr r%d' invalid register: %s\n", rd, line);
-            return 0;
-        }
-        // That's it. No immediate check
-        return 1;
-    } else {
-        // brr L (signed 12-bit)
-        int val;
-        if (!parse_signed_12_bit(operand, &val)) {
-            fprintf(stderr, "Error: 'brr' literal out of [-2048..2047] range or invalid: %s\n", operand);
-            return 0;
-        }
-        return 1;
-    }
-}
-
-/******************************************************************************
- * Minimal check for recognized opcodes in pass1:
+ * is_valid_instruction_pass1: check opcode and specialized forms (brr, mov, etc.)
  ******************************************************************************/
 static int is_valid_instruction_pass1(const char *line) {
     char op[32];
@@ -249,8 +420,8 @@ static int is_valid_instruction_pass1(const char *line) {
         "halt",
         "in","out","clr","ld","push","pop"
     };
-    int n = (int)(sizeof(ops)/sizeof(ops[0]));
     int recognized = 0;
+    int n = (int)(sizeof(ops)/sizeof(ops[0]));
     for (int i = 0; i < n; i++) {
         if (!strcmp(op, ops[i])) {
             recognized = 1;
@@ -261,16 +432,22 @@ static int is_valid_instruction_pass1(const char *line) {
         return 0;
     }
 
-    // If recognized, do specialized checks
+    // Specialized checks:
     if (!strcmp(op, "brr")) {
-        // Handle the two-forms for brr
         if (!validate_brr(line)) {
             return 0;
         }
         return 1;
     }
+    else if (!strcmp(op, "mov")) {
+        // parse the line for any of the 4 forms
+        if (!validate_mov(line)) {
+            return 0;
+        }
+        return 1;
+    }
 
-    // For instructions that might have a literal, check range
+    // For addi, subi, etc.
     if (!validate_instruction_immediate(line)) {
         return 0;
     }
@@ -279,7 +456,7 @@ static int is_valid_instruction_pass1(const char *line) {
 }
 
 /******************************************************************************
- * PASS 1: Gather labels and track the program counter.
+ * PASS 1: Gather labels, track the program counter, ensure valid instructions.
  ******************************************************************************/
 static void pass1(const char *filename) {
     FILE *fin = fopen(filename, "r");
@@ -310,7 +487,6 @@ static void pass1(const char *filename) {
         // Label definition.
         if (line[0] == ':') {
             char labelName[50];
-            // e.g. ":L1" -> labelName = "L1"
             if (sscanf(line + 1, "%49s", labelName) == 1) {
                 add_label(labelName, programCounter);
             }
@@ -324,24 +500,25 @@ static void pass1(const char *filename) {
                 fclose(fin);
                 exit(1);
             }
-            // Update PC based on instruction/macro size
+            // Macros expansions for pass1 counting:
             if (starts_with_ld(line)) {
-                // ld macro => expands to 48 bytes
+                // ld => expands to 48 bytes
                 programCounter += 48;
             }
             else if (starts_with_push(line)) {
-                // push macro => 8 bytes
+                // push => expands to 8 bytes
                 programCounter += 8;
             }
             else if (starts_with_pop(line)) {
-                // pop macro => 8 bytes
+                // pop => expands to 8 bytes
                 programCounter += 8;
             }
             else {
                 // Normal instruction => 4 bytes
                 programCounter += 4;
             }
-        } else if (section == DATA) {
+        } 
+        else if (section == DATA) {
             // Each data item is 8 bytes
             programCounter += 8;
         }
@@ -350,7 +527,7 @@ static void pass1(const char *filename) {
 }
 
 /******************************************************************************
- * Macro expansion functions (pass2).
+ * Macro expansions (Pass 2)
  ******************************************************************************/
 static void expandIn(int rD, int rS, FILE *fout) {
     fprintf(fout, "\tpriv r%d, r%d, r0, 3\n", rD, rS);
@@ -374,10 +551,9 @@ static void expandPop(int rD, FILE *fout) {
 }
 
 /******************************************************************************
- * expandLd: Expand an ld macro into 12 instructions that build a 64-bit immediate.
+ * expandLd: Expand an ld macro into 12 instructions (48 bytes).
  ******************************************************************************/
 static void expandLd(int rD, uint64_t L, FILE *fout) {
-    // Zero the target register.
     fprintf(fout, "\txor r%d, r%d, r%d\n", rD, rD, rD);
 
     unsigned long long top12  = (L >> 52) & 0xFFF;
@@ -401,12 +577,12 @@ static void expandLd(int rD, uint64_t L, FILE *fout) {
 }
 
 /******************************************************************************
- * parseMacro: Use regex to match macro expressions in pass2.
- * For 'ld', also check 64-bit overflow using errno.
+ * parseMacro (Pass 2):
+ * Handle macros: ld, push, pop, in, out, clr, halt
  ******************************************************************************/
 static void parseMacro(const char *line, FILE *fout) {
     regex_t regex;
-    regmatch_t matches[4]; // up to 3 capture groups
+    regmatch_t matches[4];
     char op[16];
 
     if (sscanf(line, "%15s", op) != 1) {
@@ -414,13 +590,9 @@ static void parseMacro(const char *line, FILE *fout) {
         return;
     }
 
-    if (strcmp(op, "ld") == 0) {
-        /*
-         * The regex below accepts an immediate operand that may optionally begin with
-         * a colon (indicating a label reference) or not.
-         */
+    if (!strcmp(op, "ld")) {
         const char *pattern =
-            "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*(:?)([0-9a-fA-FxX:]+)[[:space:]]*$";
+          "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*(:?)([0-9a-fA-FxX:]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for ld\n");
             return;
@@ -434,32 +606,28 @@ static void parseMacro(const char *line, FILE *fout) {
             regBuf[len] = '\0';
             rD = atoi(regBuf);
             if (rD < 0 || rD > 31) {
-                fprintf(stderr, "Error: register out of range in ld: %s\n", regBuf);
+                fprintf(stderr, "Error: register out of range in ld => r%d\n", rD);
                 regfree(&regex);
                 return;
             }
-            // The second capture group (matches[2]) is the optional colon.
-            // The third capture group (matches[3]) is numeric or label part.
             len = matches[3].rm_eo - matches[3].rm_so;
             strncpy(immBuf, line + matches[3].rm_so, len);
             immBuf[len] = '\0';
 
             if (immBuf[0] == ':') {
-                // It's a label
                 LabelAddress *entry = find_label(immBuf + 1);
-                if (entry) {
-                    imm = entry->address;
-                } else {
-                    fprintf(stderr, "Error: label %s not found\n", immBuf + 1);
+                if (!entry) {
+                    fprintf(stderr, "Error: label %s not found\n", immBuf+1);
                     regfree(&regex);
                     return;
                 }
+                imm = entry->address;
             } else {
                 errno = 0;
                 char *endptr = NULL;
                 uint64_t tmpVal = strtoull(immBuf, &endptr, 0);
                 if (errno == ERANGE) {
-                    fprintf(stderr, "Error: 'ld' immediate out of 64-bit range: %s\n", immBuf);
+                    fprintf(stderr, "Error: 'ld' immediate out of 64-bit range => %s\n", immBuf);
                     regfree(&regex);
                     return;
                 }
@@ -471,8 +639,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "push") == 0) {
-        const char *pattern = "^[[:space:]]*push[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
+    else if (!strcmp(op, "push")) {
+        const char *pattern =
+          "^[[:space:]]*push[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for push\n");
             return;
@@ -485,7 +654,7 @@ static void parseMacro(const char *line, FILE *fout) {
             regBuf[len] = '\0';
             rD = atoi(regBuf);
             if (rD < 0 || rD > 31) {
-                fprintf(stderr, "Error: register out of range in push: %s\n", regBuf);
+                fprintf(stderr, "Error: register out of range in push => %s\n", line);
                 regfree(&regex);
                 return;
             }
@@ -495,8 +664,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "pop") == 0) {
-        const char *pattern = "^[[:space:]]*pop[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
+    else if (!strcmp(op, "pop")) {
+        const char *pattern =
+          "^[[:space:]]*pop[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for pop\n");
             return;
@@ -509,7 +679,7 @@ static void parseMacro(const char *line, FILE *fout) {
             regBuf[len] = '\0';
             rD = atoi(regBuf);
             if (rD < 0 || rD > 31) {
-                fprintf(stderr, "Error: register out of range in pop: %s\n", regBuf);
+                fprintf(stderr, "Error: register out of range in pop => %s\n", line);
                 regfree(&regex);
                 return;
             }
@@ -519,9 +689,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "in") == 0) {
+    else if (!strcmp(op, "in")) {
         const char *pattern =
-            "^[[:space:]]*in[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*r([0-9]+)[[:space:]]*$";
+          "^[[:space:]]*in[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*r([0-9]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for in\n");
             return;
@@ -538,7 +708,7 @@ static void parseMacro(const char *line, FILE *fout) {
             rD = atoi(regBuf);
             rS = atoi(regBuf2);
             if (rD < 0 || rD > 31 || rS < 0 || rS > 31) {
-                fprintf(stderr, "Error: register out of range in 'in' macro: %s\n", line);
+                fprintf(stderr, "Error: register out of range in 'in': %s\n", line);
                 regfree(&regex);
                 return;
             }
@@ -548,9 +718,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "out") == 0) {
+    else if (!strcmp(op, "out")) {
         const char *pattern =
-            "^[[:space:]]*out[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*r([0-9]+)[[:space:]]*$";
+          "^[[:space:]]*out[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*r([0-9]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for out\n");
             return;
@@ -567,7 +737,7 @@ static void parseMacro(const char *line, FILE *fout) {
             rD = atoi(regBuf);
             rS = atoi(regBuf2);
             if (rD < 0 || rD > 31 || rS < 0 || rS > 31) {
-                fprintf(stderr, "Error: register out of range in 'out' macro: %s\n", line);
+                fprintf(stderr, "Error: register out of range in 'out': %s\n", line);
                 regfree(&regex);
                 return;
             }
@@ -577,8 +747,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "clr") == 0) {
-        const char *pattern = "^[[:space:]]*clr[[:space:]]+r([0-9]+)[[:space:]]*$";
+    else if (!strcmp(op, "clr")) {
+        const char *pattern =
+          "^[[:space:]]*clr[[:space:]]+r([0-9]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for clr\n");
             return;
@@ -591,7 +762,7 @@ static void parseMacro(const char *line, FILE *fout) {
             regBuf[len] = '\0';
             rD = atoi(regBuf);
             if (rD < 0 || rD > 31) {
-                fprintf(stderr, "Error: register out of range in clr: %s\n", regBuf);
+                fprintf(stderr, "Error: register out of range in clr => %s\n", line);
                 regfree(&regex);
                 return;
             }
@@ -601,8 +772,9 @@ static void parseMacro(const char *line, FILE *fout) {
         }
         regfree(&regex);
     }
-    else if (strcmp(op, "halt") == 0) {
-        const char *pattern = "^[[:space:]]*halt[[:space:]]*$";
+    else if (!strcmp(op, "halt")) {
+        const char *pattern = 
+          "^[[:space:]]*halt[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for halt\n");
             return;
@@ -615,12 +787,12 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else {
-        // Not recognized – simply print the line as-is.
+        // Not recognized – print the line as-is.
         fprintf(fout, "\t%s\n", line);
     }
 }
 
-// Checks if the line begins with one of the recognized macro opcodes.
+// Check if line is one of the recognized macros
 static int is_macro_line(const char *line) {
     char op[16];
     if (sscanf(line, "%15s", op) != 1) {
@@ -637,7 +809,7 @@ static int is_macro_line(const char *line) {
 }
 
 /******************************************************************************
- * PASS 2: Process the input file, performing label replacement and macro expansion.
+ * PASS 2: Output file generation (macro expansion + label substitution)
  ******************************************************************************/
 static void pass2(const char *infile, const char *outfile) {
     FILE *fin = fopen(infile, "r");
@@ -659,9 +831,8 @@ static void pass2(const char *infile, const char *outfile) {
         if (!line[0] || line[0] == ';') {
             continue;
         }
-        // Handle directives.
+        // Directives
         if (!strcmp(line, ".code")) {
-            // Output every .code directive as-is (do not merge).
             fprintf(fout, ".code\n");
             continue;
         }
@@ -669,20 +840,19 @@ static void pass2(const char *infile, const char *outfile) {
             fprintf(fout, ".data\n");
             continue;
         }
-        // Skip label definitions.
+        // Skip label definitions
         if (line[0] == ':') {
             continue;
         }
-        // If there is a label reference (a colon) in the line, replace it with its resolved address.
+        // If there's a label reference (colon in the middle), replace it with its address
         char *colon = strchr(line, ':');
         if (colon) {
             char lbl[50];
             if (sscanf(colon + 1, "%49s", lbl) == 1) {
                 LabelAddress *entry = find_label(lbl);
                 if (entry) {
-                    *colon = '\0'; // Cut off at the colon.
+                    *colon = '\0'; // Cut at colon
                     char buffer[1024];
-                    // Output the label's address in decimal.
                     snprintf(buffer, sizeof(buffer), "\t%s%d", line, entry->address);
                     if (is_macro_line(buffer)) {
                         parseMacro(buffer, fout);
@@ -697,28 +867,31 @@ static void pass2(const char *infile, const char *outfile) {
                 }
             }
         }
-        // If the line is a macro, expand it; otherwise, output it as-is.
+        // If the line is a macro, expand; otherwise output as-is
         if (is_macro_line(line)) {
             parseMacro(line, fout);
         } else {
             fprintf(fout, "\t%s\n", line);
         }
     }
+
     fclose(fin);
     fclose(fout);
 }
 
-
+/******************************************************************************
+ * main
+ ******************************************************************************/
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <inputfile> <outputfile>\n", argv[0]);
         return 1;
     }
-    // Pass 1: Gather label addresses and do validation (including brr).
+    // Pass 1: validate instructions + gather labels
     pass1(argv[1]);
-    // Pass 2: Process the file (macro expansion and label replacement).
+    // Pass 2: expand macros + label replacement
     pass2(argv[1], argv[2]);
-    // Free the label->address map.
+    // Cleanup
     free_hashmap();
     return 0;
 }
