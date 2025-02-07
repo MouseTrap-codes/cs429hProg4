@@ -338,9 +338,9 @@ void pass2(const char *input_filename, const char *output_filename) {
                 fprintf(fout, "\t%s\n", line);
             } else if ("^pop\\s+r[0-9]+$", line) {
                 fprintf(fout, "\t%s\n", line);
+            } else {
+                fprintf(fout, "\t%s\n", line);
             }
-    
-            fprintf(fout, "\t%s\n", line);
         }
     }
 
@@ -359,7 +359,7 @@ int main(int argc, char *argv[]) {
     // test pass 1
     // Run Pass 1 to calculate label addresses.
     pass1(argv[1]);
-    // pass2(argv[1], argv[2]);
+    pass2(argv[1], argv[2]);
     
     // // For demonstration, print out the label-address pairs.
     // LabelAddress *entry, *tmp;
