@@ -242,8 +242,8 @@ static void expandPush(int rD, FILE *fout) {
 }
 // pop => mov rD, (r31)(0); addi r31, 8
 static void expandPop(int rD, FILE *fout) {
-    fprintf(fout, "\taddi r31, 8\n");
     fprintf(fout, "\tmov r%d, (r31)(0)\n", rD);
+    fprintf(fout, "\taddi r31, 8\n");
 }
 
 /*
