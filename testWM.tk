@@ -1,0 +1,9 @@
+.code
+    ld r12, 231268
+:L1
+    ld r3, 1928374
+    ld r1, :L1
+:L2
+    ld r14, :L3
+:L3
+    addi r4, 98
