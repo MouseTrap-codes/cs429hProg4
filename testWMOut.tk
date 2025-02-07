@@ -1,28 +1,6 @@
 .code
-	xor r0, r0, r0
-	addi r12, r0, 0
-	shftli r12, 12
-	addi r12, r12, 0
-	shftli r12, 12
-	addi r12, r12, 0
-	shftli r12, 12
-	addi r12, r12, 3
-	shftli r12, 4
-	addi r12, r12, 2166
-	shftli r12, 4
-	addi r12, r12, 4
-	xor r0, r0, r0
-	addi r3, r0, 0
-	shftli r3, 12
-	addi r3, r3, 0
-	shftli r3, 12
-	addi r3, r3, 0
-	shftli r3, 12
-	addi r3, r3, 29
-	shftli r3, 4
-	addi r3, r3, 1739
-	shftli r3, 4
-	addi r3, r3, 6
+	ld r12, 231268
+	ld r3, 1928374
 	ld r1, 4144
 	ld r14, 4288
 	addi r4, 98
