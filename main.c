@@ -269,7 +269,8 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else if (strcmp(op, "push") == 0) {
-        const char *pattern = "^[[:space:]]*push[[:space:]]+r([0-9]+)[[:space:]]*$";
+        // Updated pattern: allow an optional trailing comma after the register.
+        const char *pattern = "^[[:space:]]*push[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for push\n");
             return;
@@ -288,7 +289,8 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else if (strcmp(op, "pop") == 0) {
-        const char *pattern = "^[[:space:]]*pop[[:space:]]+r([0-9]+)[[:space:]]*$";
+        // Updated pattern: allow an optional trailing comma after the register.
+        const char *pattern = "^[[:space:]]*pop[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for pop\n");
             return;
