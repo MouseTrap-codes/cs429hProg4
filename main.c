@@ -441,7 +441,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     pass1(argv[1]);
-    pass2(argv[1], argv[2]);
+    // pass2(argv[1], argv[2]);
     free_hashmap();
     return 0;
 }
