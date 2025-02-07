@@ -11,7 +11,7 @@
  ******************************************************************************/
 typedef struct {
     char label[50];
-    int address;        // For example, 0x1000 is stored as 4096
+    int address;        // e.g. 0x1000 is stored as 4096 (in decimal)
     UT_hash_handle hh;  // UTHash handle
 } LabelAddress;
 
@@ -129,7 +129,7 @@ static void pass1(const char *filename) {
         line[strcspn(line, "\n")] = '\0';
         trim(line);
         if (!line[0] || line[0] == ';') { continue; }
-        // Check directives.
+        // Check for directives.
         if (line[0] == '.') {
             if (!strncmp(line, ".code", 5)) { section = CODE; }
             else if (!strncmp(line, ".data", 5)) { section = DATA; }
@@ -138,7 +138,7 @@ static void pass1(const char *filename) {
         // Label definition.
         if (line[0] == ':') {
             char labelName[50];
-            if (sscanf(line+1, "%49s", labelName) == 1) {
+            if (sscanf(line + 1, "%49s", labelName) == 1) {
                 add_label(labelName, programCounter);
             }
             continue;
@@ -162,15 +162,8 @@ static void pass1(const char *filename) {
 }
 
 /******************************************************************************
- * PASS 2:
- *  - Unify multiple .code sections into one.
- *  - Retain .data sections as is.
- *  - Do not output label definitions (lines starting with ':').
- *  - Expand macros using regex matching.
- *  - Replace references to :LABEL with a decimal address.
+ * Macro expansion functions for non-regex macros.
  ******************************************************************************/
-
-/* Macro expansion functions for non-regex macros. */
 static void expandIn(int rD, int rS, FILE *fout) {
     fprintf(fout, "\tpriv r%d, r%d, r0, 3\n", rD, rS);
 }
@@ -189,17 +182,48 @@ static void expandPush(int rD, FILE *fout) {
 }
 static void expandPop(int rD, FILE *fout) {
     fprintf(fout, "\tmov r%d, (r31)(0)\n", rD);
-    fprintf(fout, "\taddi r31, 8\n");
+    fprintf(fout, "\taddi r31, 8\n", rD);
+}
+
+/******************************************************************************
+ * expandLd: Expand an ld macro into 12 instructions that build a 64-bit immediate.
+ ******************************************************************************/
+static void expandLd(int rD, uint64_t L, FILE *fout) {
+    // Build the 64-bit immediate in rD using shifting.
+    fprintf(fout, "\txor r0, r0, r0\n");
+
+    unsigned long long top12  = (L >> 52) & 0xFFF;
+    unsigned long long mid12a = (L >> 40) & 0xFFF;
+    unsigned long long mid12b = (L >> 28) & 0xFFF;
+    unsigned long long mid12c = (L >> 16) & 0xFFF;
+    unsigned long long mid4   = (L >> 4) & 0xFFF;
+    unsigned long long last4  =  L       & 0xF;
+
+    fprintf(fout, "\taddi r%d, r0, %llu\n", rD, top12);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
+
+    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12a);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
+
+    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12b);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
+
+    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12c);
+    fprintf(fout, "\tshftli r%d, 4\n", rD);
+
+    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid4);
+    fprintf(fout, "\tshftli r%d, 4\n", rD);
+
+    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, last4);
 }
 
 /******************************************************************************
  * parseMacro using regex to match macro expressions.
- * For Stage 1, the ld macro is simply converted to an ld instruction
- * with a resolved (decimal) immediate rather than expanded into 12 instructions.
+ * For Stage 1, the ld macro is expanded into 12 instructions.
  ******************************************************************************/
 static void parseMacro(const char *line, FILE *fout) {
     regex_t regex;
-    regmatch_t matches[3]; // We'll capture two groups: register and immediate.
+    regmatch_t matches[3]; // Capture register and immediate.
     char op[16];
 
     if (sscanf(line, "%15s", op) != 1) {
@@ -208,8 +232,8 @@ static void parseMacro(const char *line, FILE *fout) {
     }
 
     if (strcmp(op, "ld") == 0) {
-        // New pattern: Capture register number in group 1 and the entire immediate in group 2.
-        // The immediate may optionally start with "0x" and include hexadecimal digits.
+        // Pattern: optional whitespace, ld, whitespace, r<number>, optional comma, whitespace,
+        // then an immediate (which may have a "0x" prefix) in one capture group.
         const char *pattern = "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*((0x)?[0-9a-fA-F]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for ld\n");
@@ -226,10 +250,8 @@ static void parseMacro(const char *line, FILE *fout) {
             strncpy(immBuf, line + matches[2].rm_so, len);
             immBuf[len] = '\0';
             rD = atoi(regBuf);
-            // Use base 0 so that a "0x" prefix is interpreted correctly.
             imm = strtoull(immBuf, NULL, 0);
-            // Output the ld instruction with the immediate in decimal.
-            fprintf(fout, "\tld r%d, %d\n", rD, (unsigned int)imm);
+            expandLd(rD, imm, fout);
         } else {
             fprintf(stderr, "Error parsing ld macro: %s\n", line);
         }
@@ -372,7 +394,7 @@ static int is_macro_line(const char *line) {
 }
 
 /******************************************************************************
- * Pass 2: Process the input file, performing label replacement and macro expansion.
+ * PASS 2: Process the input file, performing label replacement and macro expansion.
  ******************************************************************************/
 static void pass2(const char *infile, const char *outfile) {
     FILE *fin = fopen(infile, "r");
@@ -418,6 +440,7 @@ static void pass2(const char *infile, const char *outfile) {
                 if (entry) {
                     *colon = '\0'; // Cut off at the colon.
                     char buffer[1024];
+                    // Output the label's address in decimal.
                     snprintf(buffer, sizeof(buffer), "\t%s%d", line, entry->address);
                     if (is_macro_line(buffer)) {
                         parseMacro(buffer, fout);
