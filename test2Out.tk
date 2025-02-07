@@ -2,5 +2,4 @@
 	xor r0, r0, r0
 	ld r5, 4152
 	br r5
-.code
 	priv r0, r0, r0, 0
