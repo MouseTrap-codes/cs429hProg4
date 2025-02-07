@@ -12,13 +12,13 @@
  ******************************************************************************/
 typedef struct {
     char label[50];
-    int address;        // e.g. 0x1000 is stored as 4096 (in decimal)
+    int address;        // ie 0x1000 is stored as 4096 (in decimal)
     UT_hash_handle hh;  // UTHash handle
 } LabelAddress;
 
 static LabelAddress *hashmap = NULL;
 
-// Add a label to the hash map.
+// add a label to the hash map.
 static void add_label(const char *label, int address) {
     LabelAddress *entry = (LabelAddress *)malloc(sizeof(LabelAddress));
     if (!entry) {
@@ -31,14 +31,14 @@ static void add_label(const char *label, int address) {
     HASH_ADD_STR(hashmap, label, entry);
 }
 
-// Find a label by name.
+// find a label by name.
 static LabelAddress *find_label(const char *label) {
     LabelAddress *entry;
     HASH_FIND_STR(hashmap, label, entry);
     return entry;
 }
 
-// Free the entire label->address map.
+// free the hashmap
 static void free_hashmap(void) {
     LabelAddress *cur, *tmp;
     HASH_ITER(hh, hashmap, cur, tmp) {
@@ -165,35 +165,19 @@ static int validate_brr(const char *line) {
  * We'll parse them in pass1 to ensure correct usage and immediate range.
  ******************************************************************************/
 static int validate_mov(const char *line) {
-    // We'll do a rough parse:
-    //   mov   [dest], [source or imm or memory form]
-    // Some possible lines:
-    //   mov r5, (r6)(-12)
-    //   mov r5, r6
-    //   mov r5, 100
-    //   mov (r5)(-8), r6
-    // We can do a simple check for '(' or 'r' or immediate.
-    // The code below is a simplistic approach; you can adapt for more robust parsing.
-
-    // Quick tokenize
+   
+    // quick tokenize
     char op[32], part1[64], part2[64];
-    // Example: "mov r5, (r6)(12)" => op="mov", part1="r5,", part2="(r6)(12)"
-    // We'll trim extra commas/spaces after splitting.
     int count = sscanf(line, "%31s %63[^,], %63[^\n]", op, part1, part2);
 
-    // If count < 2 => definitely invalid "mov"
+    // if count < 2 => invalid "mov"
     if (count < 2) {
         fprintf(stderr, "Error: incomplete 'mov' instruction: %s\n", line);
         return 0;
     }
 
-    // If we didn't parse part2, it might be that there's no comma in the line:
-    //   e.g. "mov (r5)(4) r6" => That wouldn't match the pattern with comma
-    // Let's do an alternative if count=2
+    // if count=2
     if (count == 2) {
-        // We'll see if there's a space separation
-        // e.g. "mov (r5)(4) r6" => part1="(r5)(4) r6"
-        // We can re-split part1 by whitespace
         char second[64] = {0};
         if (sscanf(part1, "%63s %63s", part1, second) == 2) {
             strcpy(part2, second);
@@ -201,8 +185,8 @@ static int validate_mov(const char *line) {
         }
     }
 
-    // Now we have possibly 3 tokens: op, part1, part2
-    // Remove trailing spaces or commas from part1, part2
+    // have possibly 3 tokens: op, part1, part2
+    // remove trailing spaces or commas from part1, part2
     {
         // trim front
         char *p = part1; 
@@ -220,18 +204,17 @@ static int validate_mov(const char *line) {
         }
     }
 
-    // Now let's see which form it might be:
+    // see which form it might be:
     //  (a) mov rD, rS
     //  (b) mov rD, L
     //  (c) mov rD, (rS)(L)
     //  (d) mov (rD)(L), rS
     //
-    // We can detect (d) if part1 starts with '(' or we see "(". 
-    // We detect (c) if part2 starts with '('
-    // We detect (a) if both part1 and part2 are registers
-    // We detect (b) if part1 is register, part2 is immediate
+    // detect (d) if part1 starts with '(' or we see "(". 
+    // detect (c) if part2 starts with '('
+    // detect (a) if both part1 and part2 are registers
+    // detect (b) if part1 is register, part2 is immediate
     //
-    // We'll do it step by step.
 
     // If "part1" starts with '(' => form (d)
     if (part1[0] == '(') {
@@ -250,9 +233,6 @@ static int validate_mov(const char *line) {
         }
         // parse part1 => e.g. "(r5)(-8)"
         // find rD in the parentheses
-        // We'll do a quick approach with a small regex or manual parse
-        // Example manual parse:
-        //   skip '(' => see 'r5' => skip 'r' => 5 => skip ')' => see '(...)'
         char *p = strstr(part1, "r");
         if (!p) {
             fprintf(stderr, "Error: 'mov (rD)(L), rS': can't find register in %s\n", part1);
@@ -263,7 +243,6 @@ static int validate_mov(const char *line) {
             fprintf(stderr, "Error: 'mov (rD)(L), rS': register out of range => %s\n", line);
             return 0;
         }
-        // now skip over something like "r5)" => find next '('
         p = strchr(p, '(');
         if (!p) {
             fprintf(stderr, "Error: 'mov (rD)(L), rS': missing offset => %s\n", line);
@@ -278,17 +257,17 @@ static int validate_mov(const char *line) {
         }
         offsetBuf[i] = '\0';
         // offsetBuf might be "-8" or "12"
-        // We'll assume signed 12-bit
+        // assume signed 12-bit
         int offsetVal;
         if (!parse_signed_12_bit(offsetBuf, &offsetVal)) {
             fprintf(stderr, "Error: offset out of [-2048..2047] in 'mov (rD)(L), rS' => %s\n", offsetBuf);
             return 0;
         }
-        // If we get here, it passes validation
+        // passes validation
         return 1; 
     }
 
-    // Otherwise, part1 is presumably "rD"
+    // otherwise, part1 is presumably "rD"
     if (part1[0] != 'r') {
         fprintf(stderr, "Error: mov => expected 'rD' or '(rD)(L)' => got: %s\n", part1);
         return 0;
@@ -299,16 +278,16 @@ static int validate_mov(const char *line) {
         return 0;
     }
 
-    // If count < 3 => e.g. "mov r5" => incomplete
+    // if count < 3 => incomplete
     if (count < 3) {
         fprintf(stderr, "Error: incomplete 'mov' => missing second operand: %s\n", line);
         return 0;
     }
 
-    // Now check part2
+    // check part2
     if (part2[0] == 'r') {
         // (a) mov rD, rS
-        // e.g. "mov r5, r6"
+        // ie "mov r5, r6"
         int rS = atoi(part2+1);
         if (rS < 0 || rS > 31) {
             fprintf(stderr, "Error: register out of range => %s\n", line);
@@ -320,7 +299,7 @@ static int validate_mov(const char *line) {
     else if (part2[0] == '(') {
         // (c) mov rD, (rS)(L)
         // parse the memory form
-        // e.g. part2="(r6)(-8)"
+        // ie part2="(r6)(-8)"
         char *p = strstr(part2, "r");
         if (!p) {
             fprintf(stderr, "Error: can't find register in 'mov rD, (rS)(L)' => %s\n", line);
@@ -354,7 +333,7 @@ static int validate_mov(const char *line) {
     else {
         // (b) mov rD, L
         // We assume an unsigned 12-bit literal for bits 52..63
-        // e.g. "mov r5, 100"
+        // ie "mov r5, 100"
         int val;
         if (!parse_unsigned_12_bit(part2, &val)) {
             fprintf(stderr, "Error: mov rD, L => L out of [0..4095]: %s\n", part2);
@@ -369,7 +348,7 @@ static int validate_mov(const char *line) {
  * For everything else with literal => separate checks (brr, mov, etc.)
  ******************************************************************************/
 static int validate_instruction_immediate(const char *line) {
-    // We'll do a quick parse: opcode, rD, immediate
+    // do a quick parse: opcode, rD, immediate
     char op[32], rdPart[32], immPart[64];
     int count = sscanf(line, "%31s %31s %63[^\n]", op, rdPart, immPart);
     if (count < 2) return 1; // we won't call it invalid here
@@ -377,7 +356,7 @@ static int validate_instruction_immediate(const char *line) {
     if (!strcmp(op, "addi") || !strcmp(op, "subi") || 
         !strcmp(op, "shftri") || !strcmp(op, "shftli")) 
     {
-        // Must have an unsigned 12-bit immediate
+        // must have an unsigned 12-bit immediate
         if (count < 3) {
             fprintf(stderr, "Error: missing immediate => %s\n", line);
             return 0;
@@ -432,7 +411,6 @@ static int is_valid_instruction_pass1(const char *line) {
         return 0;
     }
 
-    // Specialized checks:
     if (!strcmp(op, "brr")) {
         if (!validate_brr(line)) {
             return 0;
@@ -447,7 +425,7 @@ static int is_valid_instruction_pass1(const char *line) {
         return 1;
     }
 
-    // For addi, subi, etc.
+    // for addi, subi, etc.
     if (!validate_instruction_immediate(line)) {
         return 0;
     }
@@ -465,7 +443,7 @@ static void pass1(const char *filename) {
         exit(1);
     }
     enum { NONE, CODE, DATA } section = NONE;
-    int programCounter = 0x1000; // Tinker code starts at address 0x1000
+    int programCounter = 0x1000; // tinker code starts at address 0x1000
 
     char line[1024];
     while (fgets(line, sizeof(line), fin)) {
@@ -474,7 +452,7 @@ static void pass1(const char *filename) {
         if (!line[0] || line[0] == ';') {
             continue;
         }
-        // Check for directives.
+        // check for disrectives.
         if (line[0] == '.') {
             if (!strncmp(line, ".code", 5)) {
                 section = CODE;
@@ -484,7 +462,7 @@ static void pass1(const char *filename) {
             }
             continue;
         }
-        // Label definition.
+        // label definition.
         if (line[0] == ':') {
             char labelName[50];
             if (sscanf(line + 1, "%49s", labelName) == 1) {
@@ -492,15 +470,15 @@ static void pass1(const char *filename) {
             }
             continue;
         }
-        // Process instructions or data items.
+        // process instructions/data
         if (section == CODE) {
-            // Validate the instruction
+            // validate the instruction
             if (!is_valid_instruction_pass1(line)) {
                 fprintf(stderr, "pass1 error: invalid line => %s\n", line);
                 fclose(fin);
                 exit(1);
             }
-            // Macros expansions for pass1 counting:
+            // macros expansions for pass1 counting:
             if (starts_with_ld(line)) {
                 // ld => expands to 48 bytes
                 programCounter += 48;
@@ -514,7 +492,7 @@ static void pass1(const char *filename) {
                 programCounter += 8;
             }
             else {
-                // Normal instruction => 4 bytes
+                // normal instruction => 4 bytes
                 programCounter += 4;
             }
         } 
@@ -787,12 +765,12 @@ static void parseMacro(const char *line, FILE *fout) {
         regfree(&regex);
     }
     else {
-        // Not recognized – print the line as-is.
+        // not recognized – print the line as-is.
         fprintf(fout, "\t%s\n", line);
     }
 }
 
-// Check if line is one of the recognized macros
+// check if line is one of the recognized macros
 static int is_macro_line(const char *line) {
     char op[16];
     if (sscanf(line, "%15s", op) != 1) {
@@ -840,18 +818,18 @@ static void pass2(const char *infile, const char *outfile) {
             fprintf(fout, ".data\n");
             continue;
         }
-        // Skip label definitions
+        // skip label definitions
         if (line[0] == ':') {
             continue;
         }
-        // If there's a label reference (colon in the middle), replace it with its address
+        // replace label references with it's address
         char *colon = strchr(line, ':');
         if (colon) {
             char lbl[50];
             if (sscanf(colon + 1, "%49s", lbl) == 1) {
                 LabelAddress *entry = find_label(lbl);
                 if (entry) {
-                    *colon = '\0'; // Cut at colon
+                    *colon = '\0'; // cut at colon
                     char buffer[1024];
                     snprintf(buffer, sizeof(buffer), "\t%s%d", line, entry->address);
                     if (is_macro_line(buffer)) {
@@ -867,7 +845,7 @@ static void pass2(const char *infile, const char *outfile) {
                 }
             }
         }
-        // If the line is a macro, expand; otherwise output as-is
+        // if the line is a macro, expand; otherwise output as-is
         if (is_macro_line(line)) {
             parseMacro(line, fout);
         } else {
@@ -887,11 +865,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <inputfile> <outputfile>\n", argv[0]);
         return 1;
     }
-    // Pass 1: validate instructions + gather labels
+    // Pass 1: validate instructions + populate label -> addresses hashmap
     pass1(argv[1]);
-    // Pass 2: expand macros + label replacement
+    // Pass 2: expand macros + replace labels with addreses
     pass2(argv[1], argv[2]);
-    // Cleanup
+    // free memory!
     free_hashmap();
     return 0;
 }
