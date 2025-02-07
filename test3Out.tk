@@ -1,0 +1,31 @@
+.code
+	priv r4, r8, 0, 3
+	xor r0, r0, r0
+	addi r12, r0, 0
+	shiftli r12, 12
+	addi r12, r0, 0
+	shftli r12, 12
+	addi r12, r0, 0
+	shftli r12, 12
+	addi r12, r0, 3
+	shftli r12, 4
+	addi r12, r0, 2166
+	shftli r12, 4
+	addi r12, r0, 4
+	priv r12, r13, 0, 3
+	xor r0, r0, r0
+	addi r19, r0, 0
+	shiftli r19, 12
+	addi r19, r0, 0
+	shftli r19, 12
+	addi r19, r0, 0
+	shftli r19, 12
+	addi r19, r0, 0
+	shftli r19, 4
+	addi r19, r0, 259
+	shftli r19, 4
+	addi r19, r0, 4
+	mov r1, (r31)(0)
+	subi r31, r31, 8
+	mov r2, (r31)(0)
+	addi r31, r31, 8

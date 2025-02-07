@@ -205,12 +205,12 @@ void expandHalt(FILE* output) {
 }
 
 void expandPush(int rD, FILE* output) {
-    fprintf(output, "\tmov r%d, (r31)(0)\n", rD);
+    fprintf(output, "\tmov r%d, r31(0)\n", rD);
     fprintf(output, "\tsubi r31, r31, 8\n");
 }
 
 void expandPop(int rD, FILE* output) {
-    fprintf(output, "\tmov r%d, (r31)(0)\n", rD);
+    fprintf(output, "\tmov r%d, r31(0)\n", rD);
     fprintf(output, "\taddi r31, r31, 8\n");
 }
 
