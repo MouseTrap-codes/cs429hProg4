@@ -1,5 +1,5 @@
 .code
-clr r0
-ld r5, 4108
-br r5
-halt
+	clr r0
+	ld r5, 4108
+	br r5
+	halt

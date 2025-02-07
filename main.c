@@ -260,15 +260,15 @@ void pass2(const char *input_filename, const char *output_filename) {
                 // Replace the label with its decimal address
                 char buffer[1024];
                 *label_start = '\0';  // Split the line before the label
-                snprintf(buffer, sizeof(buffer), "%s%d", line, entry->address);
+                snprintf(buffer, sizeof(buffer), "\t%s%d", line, entry->address);
                 fprintf(fout, "%s\n", buffer);
             } else {
                 printf("Warning: Label '%s' not found.\n", label);
-                fprintf(fout, "%s\n", line);  // Preserve original if not found
+                fprintf(fout, "\t%s\n", line);  // Preserve original if not found
             }
         } else {
             // No label reference, just write the line as is
-            fprintf(fout, "%s\n", line);
+            fprintf(fout, "\t%s\n", line);
         }
     }
 
