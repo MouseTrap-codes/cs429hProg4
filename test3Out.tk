@@ -1,7 +1,7 @@
 .code
 	priv r4, r8, r0, 3
 	priv r12, r13, r0, 4
-	mov (r31)(0), r1
 	subi r31, 8
-	addi r31, 8
+	mov (r31)(0), r1
 	mov r2, (r31)(0)
+	addi r31, 8
