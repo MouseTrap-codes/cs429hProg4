@@ -6,9 +6,9 @@
 #include <ctype.h>
 #include <string.h>
 
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Hashmap of labels to addresses using uthash
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 typedef struct {
     char label[50];
     int address;
@@ -61,9 +61,9 @@ void free_hashmap() {
     }
 }
 
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Regex helper functions
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 int match_regex(const char *pattern, const char *instruction) {
     regex_t regex;
     int result;
@@ -82,7 +82,7 @@ int is_valid_instruction(const char *instruction) {
     regex_t regex;
     const char *pattern =
         "^(add|addi|sub|subi|mul|div|and|or|xor|not|shftr|shftri|shftl|shftli|"
-        "br|brr|brr_l|brr_r|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt|priv)"
+        "br|brr|brr_l|brr_r|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt)"
         "([ \t]+r[0-9]+(,[ \t]*r[0-9]+(,[ \t]*r[0-9]+)?)?[ \t]*(,[ \t]*(:[A-Za-z][A-Za-z0-9]*|[0-9]+))?)?$";
     
     int result = regcomp(&regex, pattern, REG_EXTENDED);
@@ -95,9 +95,9 @@ int is_valid_instruction(const char *instruction) {
     return !result;
 }
 
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Utility: trim leading and trailing whitespace (in–place)
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 void trim(char *s) {
     char *p = s;
     while (isspace((unsigned char)*p)) p++;
@@ -110,20 +110,9 @@ void trim(char *s) {
     }
 }
 
-//---------------------------------------------------------------------
-// Range-check helper functions
-//---------------------------------------------------------------------
-int check_unsigned12(uint32_t val) {
-    return val <= 4095;
-}
-
-int check_signed12(int val) {
-    return (val >= -2048 && val <= 2047);
-}
-
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Pass 1: Compute label addresses.
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 void pass1(const char *input_filename) {
     FILE *fin = fopen(input_filename, "r");
     if (!fin) {
@@ -147,10 +136,11 @@ void pass1(const char *input_filename) {
         
         // Directives: .code or .data
         if (line[0] == '.') {
-            if (strncmp(line, ".code", 5) == 0)
+            if (strncmp(line, ".code", 5) == 0) {
                 currentSection = CODE;
-            else if (strncmp(line, ".data", 5) == 0)
+            } else if (strncmp(line, ".data", 5) == 0) {
                 currentSection = DATA;
+            }
             continue;
         }
         
@@ -162,19 +152,19 @@ void pass1(const char *input_filename) {
             continue;
         }
         
-        // Update program counter.
+        // For instructions or data items, update the program counter.
         if (currentSection == CODE) {
             if (is_valid_instruction(line)) {
                 if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line))
                     programCounter += 48; // macro expands to 12 lines (48 bytes)
                 else if (match_regex("push\\s+r[0-9]+", line))
-                    programCounter += 8;  // 2-line macro (8 bytes)
+                    programCounter += 8;  // macro expands to 2 lines (8 bytes)
                 else if (match_regex("pop\\s+r[0-9]+", line))
-                    programCounter += 8;  // 2-line macro (8 bytes)
+                    programCounter += 8;  // macro expands to 2 lines (8 bytes)
                 else
                     programCounter += 4;  // normal instruction: 4 bytes
             } else {
-                exit(-1);
+                exit(-1);  // invalid instruction line
             }
         } else if (currentSection == DATA) {
             programCounter += 8;  // each data item is 8 bytes
@@ -183,12 +173,10 @@ void pass1(const char *input_filename) {
     fclose(fin);
 }
 
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Macro expansion functions
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 void expandIn(int rD, int rS, FILE* output) {
-    // The following expansion uses a fixed L value of 3.
-    // (L is later checked in pass2 if a "priv" instruction is encountered.)
     fprintf(output, "\tpriv r%d, r%d, 0, 3\n", rD, rS);
 }
 
@@ -215,7 +203,7 @@ void expandPop(int rD, FILE* output) {
 }
 
 void expandLd(int rD, uint64_t L, FILE* output) {
-    // Example expansion for ld.
+    // Example expansion for ld (you may need to adjust if your ISA differs)
     fprintf(output, "\txor r0, r0, r0\n");
     fprintf(output, "\taddi r%d, r0, %llu\n", rD, (L >> 52) & 0xFFF);
     fprintf(output, "\tshiftli r%d, 12\n", rD);
@@ -231,18 +219,19 @@ void expandLd(int rD, uint64_t L, FILE* output) {
 }
 
 void expandMov_mr(int rD, int rS, FILE* output) {
-    // mov from memory to register (load)
+    // Expand move from memory to register: assume this becomes a load
     fprintf(output, "\tld r%d, (r%d)\n", rD, rS);
 }
 
 void expandMov_rm(int rD, int rS, FILE* output) {
-    // mov from register to memory (store)
+    // Expand move from register to memory: assume this becomes a store.
+    // (Here rD is the register holding the memory address.)
     fprintf(output, "\tst r%d, (r%d)\n", rS, rD);
 }
 
-//---------------------------------------------------------------------
-// parseMacro(): Extract parameters from a macro line and call expansion
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
+// parseMacro(): Extract parameters from a macro line and call the expansion function.
+//--------------------------------------------------------------
 void parseMacro(const char *line, FILE *output) {
     char op[16];
     int rD, rS;
@@ -281,8 +270,9 @@ void parseMacro(const char *line, FILE *output) {
         else
             fprintf(stderr, "Error parsing 'pop' macro: %s\n", line);
     } else if (strcmp(op, "ld") == 0) {
-        /* Try reading an unsigned 64-bit immediate.
-           Otherwise, try reading a label (prefixed with a colon). */
+        /* First try reading a numeric immediate.
+           If that fails, try reading a label operand (prefixed by a colon)
+        */
         if (sscanf(line, "ld%*[ \t]r%d%*[ \t,]%llu", &rD, &immediate) == 2) {
             expandLd(rD, immediate, output);
         } else {
@@ -299,49 +289,39 @@ void parseMacro(const char *line, FILE *output) {
             }
         }
     } else if (strcmp(op, "mov") == 0) {
-        // If the instruction contains parentheses, treat it as a memory move.
         if (strchr(line, '(') && strchr(line, ')')) {
             char *afterOp = line + 3;
-            while(*afterOp && isspace((unsigned char)*afterOp))
-                afterOp++;
+            while(*afterOp && isspace((unsigned char)*afterOp)) afterOp++;
             if (*afterOp == '(') {
                 // mov_rm: syntax: mov (rX) , rY
                 int rMem, rReg;
-                if (sscanf(line, "mov (r%d)%*[ \t,]r%d", &rMem, &rReg) == 2)
-                    expandMov_rm(rMem, rReg, output);
-                else
+                if (sscanf(line, "mov (r%d)%*[, \t]r%d", &rMem, &rReg) != 2 &&
+                    sscanf(line, "mov (r%d) , r%d", &rMem, &rReg) != 2)
+                {
                     fprintf(stderr, "Error parsing 'mov' macro (mov_rm): %s\n", line);
+                } else {
+                    expandMov_rm(rMem, rReg, output);
+                }
             } else {
                 // mov_mr: syntax: mov rX , (rY)
                 int rReg, rMem;
-                if (sscanf(line, "mov r%d%*[ \t,](r%d)", &rReg, &rMem) == 2)
-                    expandMov_mr(rReg, rMem, output);
-                else
+                if (sscanf(line, "mov r%d%*[, \t](r%d)", &rReg, &rMem) != 2) {
                     fprintf(stderr, "Error parsing 'mov' macro (mov_mr): %s\n", line);
+                } else {
+                    expandMov_mr(rReg, rMem, output);
+                }
             }
         } else {
-            // If no parentheses, assume a register-to-immediate move.
-            int reg, imm;
-            if (sscanf(line, "mov r%d%*[ \t,]%d", &reg, &imm) == 2) {
-                if (!check_signed12(imm)) {
-                    fprintf(stderr, "Error: Immediate for mov must be signed 12-bit, got %d\n", imm);
-                    exit(1);
-                }
-                fprintf(output, "\t%s\n", line);
-            } else {
-                // Fall back: output line unchanged.
-                fprintf(output, "\t%s\n", line);
-            }
+            fprintf(output, "\t%s\n", line);
         }
     } else {
         fprintf(output, "\t%s\n", line);
     }
 }
 
-//---------------------------------------------------------------------
-// Pass 2: Process the input file, expand macros, resolve labels,
-// and perform immediate-range checks.
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
+// Pass 2: Process the input file, expand macros, and resolve labels.
+//--------------------------------------------------------------
 void pass2(const char *input_filename, const char *output_filename) {
     FILE *fin = fopen(input_filename, "r");
     if (!fin) {
@@ -357,7 +337,7 @@ void pass2(const char *input_filename, const char *output_filename) {
     
     char line[1024];
     int in_code_section = 0;
-    int currentAddress = 0;  // Will be set to 4096 when .code is seen.
+    int currentAddress = 0;  // will be set to 4096 when .code is seen
     
     while (fgets(line, sizeof(line), fin)) {
         line[strcspn(line, "\n")] = '\0';
@@ -365,33 +345,7 @@ void pass2(const char *input_filename, const char *output_filename) {
         if (strlen(line) == 0 || line[0] == ';')
             continue;
         
-        // If the line is a "priv" instruction, check that its fourth operand (L) is 0-4.
-        if (strncmp(line, "priv", 4) == 0) {
-            int r0, r1, r2, L;
-            if (sscanf(line, "priv r%d, r%d, r%d, %d", &r0, &r1, &r2, &L) == 4) {
-                if (L < 0 || L > 4) {
-                    fprintf(stderr, "Error: L in priv must be 0, 1, 2, 3, or 4. Got %d\n", L);
-                    exit(1);
-                }
-            } else {
-                fprintf(stderr, "Error parsing priv instruction: %s\n", line);
-                exit(1);
-            }
-        }
-        
-        // Check unsigned 12-bit immediates for addi, subi, shftri, shftli.
-        if (strncmp(line, "addi", 4) == 0 || strncmp(line, "subi", 4) == 0 ||
-            strncmp(line, "shftri", 6) == 0 || strncmp(line, "shftli", 6) == 0) {
-            unsigned int imm;
-            if (sscanf(line, "%*s r%*d%*[ ,\t]r%*d%*[ ,\t]%u", &imm) == 1) {
-                if (!check_unsigned12(imm)) {
-                    fprintf(stderr, "Error: Immediate for instruction '%s' must be unsigned 12-bit, got %u\n", line, imm);
-                    exit(1);
-                }
-            }
-        }
-        
-        // Handle section directives.
+        // Handle directives.
         if (strcmp(line, ".code") == 0) {
             in_code_section = 1;
             currentAddress = 4096;
@@ -413,13 +367,18 @@ void pass2(const char *input_filename, const char *output_filename) {
         }
         
         if (in_code_section) {
-            int lineAddress = currentAddress;  // starting address for this instruction
+            int lineAddress = currentAddress;  // record starting address for this instruction
             
-            // If the instruction is a macro that we expand, do so.
+            /* If the instruction is one of our macro instructions (in, out, clr, halt, push, pop, ld, mov),
+               let parseMacro() expand it.
+            */
             if (match_regex("^(in|out|clr|halt|push|pop|ld|mov)\\b", line)) {
                 parseMacro(line, fout);
             }
-            // Otherwise, if the line contains a label reference (e.g. "opcode ... :LABEL")
+            /* Otherwise, if the line contains a label reference (an operand starting with a colon)
+               then do replacement. For branch relative instructions (brr, brr_l, brr_r)
+               compute a relative offset based on the current address.
+            */
             else if (strchr(line, ':') != NULL) {
                 char mnemonic[16];
                 sscanf(line, "%15s", mnemonic);
@@ -437,10 +396,6 @@ void pass2(const char *input_filename, const char *output_filename) {
                             offset = -offset;
                         else if (strcmp(mnemonic, "brr_r") == 0 && offset < 0)
                             offset = -offset;
-                        if (!check_signed12(offset)) {
-                            fprintf(stderr, "Error: Branch offset for %s not in signed 12-bit range: %d\n", mnemonic, offset);
-                            exit(1);
-                        }
                         *colon = '\0';
                         fprintf(fout, "\t%s %d\n", line, offset);
                     } else {
@@ -451,23 +406,12 @@ void pass2(const char *input_filename, const char *output_filename) {
                     fprintf(fout, "\t%s\n", line);
                 }
             }
-            // If this is a plain instruction (possibly a mov with immediate)
             else {
-                // Special handling for a plain mov with an immediate (no parentheses).
-                if (strncmp(line, "mov", 3) == 0 && (strchr(line, '(') == NULL)) {
-                    int reg, imm;
-                    if (sscanf(line, "mov r%d%*[ ,\t]%d", &reg, &imm) == 2) {
-                        if (!check_signed12(imm)) {
-                            fprintf(stderr, "Error: Immediate for mov must be signed 12-bit, got %d\n", imm);
-                            exit(1);
-                        }
-                    }
-                }
-                // Output the instruction unchanged.
+                // Otherwise, just output the instruction unchanged.
                 fprintf(fout, "\t%s\n", line);
             }
             
-            // Update currentAddress following the same rules as in pass1.
+            // Update currentAddress using the same rules as in pass1.
             if (is_valid_instruction(line)) {
                 if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line))
                     currentAddress += 48;
@@ -479,7 +423,7 @@ void pass2(const char *input_filename, const char *output_filename) {
                     currentAddress += 4;
             }
         } else {
-            // In data section, output the line as is.
+            // In data section, simply output the line.
             fprintf(fout, "\t%s\n", line);
         }
     }
@@ -488,9 +432,9 @@ void pass2(const char *input_filename, const char *output_filename) {
     fclose(fout);
 }
 
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 // Main
-//---------------------------------------------------------------------
+//--------------------------------------------------------------
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <inputfile> <outputfile>\n", argv[0]);
