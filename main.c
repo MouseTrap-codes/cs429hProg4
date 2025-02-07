@@ -177,8 +177,8 @@ static void expandHalt(FILE *fout) {
     fprintf(fout, "\tpriv r0, r0, r0, 0\n");
 }
 static void expandPush(int rD, FILE *fout) {
-    fprintf(fout, "\tmov (r31)(0), r%d\n", rD);
     fprintf(fout, "\tsubi r31, 8\n");
+    fprintf(fout, "\tmov (r31)(-8), r%d\n", rD);
 }
 static void expandPop(int rD, FILE *fout) {
     fprintf(fout, "\tmov r%d, (r31)(0)\n", rD);
