@@ -1,120 +1,73 @@
-#include <stdlib.h>
+/*****************************************************************************
+ * tinker_assembler.c
+ * 
+ * A Tinker assembler that:
+ *   1) In pass1, collects label addresses and increments PC correctly 
+ *      (accounting for multi-instruction macros).
+ *   2) In pass2, fully expands macros and replaces label references with 
+ *      their decimal addresses (e.g., "4096").
+ *   3) Uses the Tinker-specified syntax for push/pop/ld expansions.
+ *   4) Starts code at 0x1000 but prints decimal addresses in final output.
+ *****************************************************************************/
+
 #include <stdio.h>
-#include <stdint.h>
-#include <regex.h>
-#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <stdint.h>
 #include "uthash.h"
 
-//---------------------------------------------------------------------
-// Hashmap of labels to addresses using uthash
-//---------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Label -> Address Hash
+// ----------------------------------------------------------------------
 typedef struct {
     char label[50];
-    int address;
-    UT_hash_handle hh;
+    int address;       // We'll store int for addresses like 0x1000, etc.
+    UT_hash_handle hh; // uthash
 } LabelAddress;
 
-LabelAddress *hashmap = NULL;
+static LabelAddress *hashmap = NULL;
 
-// add a new label -> address pair to the hashmap
-void add_label(char *label, int address) {
+// Add a label
+static void add_label(const char *label, int address) {
     LabelAddress *entry = (LabelAddress *)malloc(sizeof(LabelAddress));
-    if (entry == NULL) {
-        fprintf(stderr, "Memory allocation failed\n");
+    if (!entry) {
+        fprintf(stderr, "add_label: malloc failed\n");
         return;
     }
     strncpy(entry->label, label, sizeof(entry->label) - 1);
     entry->label[sizeof(entry->label) - 1] = '\0';
     entry->address = address;
-
     HASH_ADD_STR(hashmap, label, entry);
 }
 
-// lookup a label
-LabelAddress *find_label(char *label) {
+// Find a label
+static LabelAddress* find_label(const char *label) {
     LabelAddress *entry;
     HASH_FIND_STR(hashmap, label, entry);
     return entry;
 }
 
-// update an existing label (if it was found)
-void update_label(char *label, int new_address) {
-    LabelAddress *entry = find_label(label);
-    if (entry != NULL) {
-        entry->address = new_address;
-        printf("Updated label '%s' with new address: %d\n", label, new_address);
-    } else {
-        printf("Label '%s' not found. Add it first if needed.\n", label);
+// Free the entire hash
+static void free_hashmap(void) {
+    LabelAddress *cur, *tmp;
+    HASH_ITER(hh, hashmap, cur, tmp) {
+        HASH_DEL(hashmap, cur);
+        free(cur);
     }
 }
 
-// delete a label
-void delete_label(char *label) {
-    LabelAddress *entry = find_label(label);
-    if (entry != NULL) {
-        HASH_DEL(hashmap, entry);
-        free(entry);
-    }
-}
-
-// free the entire hashmap
-void free_hashmap() {
-    LabelAddress *current, *tmp;
-    HASH_ITER(hh, hashmap, current, tmp) {
-        HASH_DEL(hashmap, current);
-        free(current);
-    }
-}
-
-//---------------------------------------------------------------------
-// Regex helper functions
-//---------------------------------------------------------------------
-int match_regex(const char *pattern, const char *instruction) {
-    regex_t regex;
-    int result;
-
-    // Compile the regex
-    result = regcomp(&regex, pattern, REG_EXTENDED);
-    if (result) {
-        fprintf(stderr, "Could not compile regex pattern: %s\n", pattern);
-        return 0;
-    }
-    // Execute the regex
-    result = regexec(&regex, instruction, 0, NULL, 0);
-    regfree(&regex);  // Free the compiled regex
-    return !result;   // Return 1 if it matches, 0 otherwise
-}
-
-// check if any given line is a valid instruction
-// (Add or remove mnemonics here to match your final spec.)
-int is_valid_instruction(const char *instruction) {
-    regex_t regex;
-    const char *pattern =
-        "^(add|addi|sub|subi|mul|div|and|or|xor|not|shftr|shftri|shftl|shftli|"
-        "br|brr|brnz|call|return|brgt|addf|subf|mulf|divf|mov|in|out|clr|ld|push|pop|halt)"
-        "([ \t]+r[0-9]+(,[ \t]*r[0-9]+(,[ \t]*r[0-9]+)?)?[ \t]*(,[ \t]*(:[A-Za-z][A-Za-z0-9]*|[0-9]+))?)?$";
-    
-    int result = regcomp(&regex, pattern, REG_EXTENDED);
-    if (result) {
-        fprintf(stderr, "Could not compile master instruction regex.\n");
-        return 0;
-    }
-    result = regexec(&regex, instruction, 0, NULL, 0);
-    regfree(&regex);
-    return !result;  // Return 1 if matched, 0 otherwise.
-}
-
-//---------------------------------------------------------------------
-// Trim leading and trailing whitespace (in–place)
-//---------------------------------------------------------------------
-void trim(char *s) {
+// ----------------------------------------------------------------------
+// Trim leading/trailing whitespace in-place
+// ----------------------------------------------------------------------
+static void trim(char *s) {
+    // leading
     char *p = s;
-    while (isspace((unsigned char)*p)) p++;
+    while (isspace((unsigned char)*p)) { p++; }
     if (p != s) {
         memmove(s, p, strlen(p) + 1);
     }
-    // Trim trailing whitespace
+    // trailing
     size_t len = strlen(s);
     while (len > 0 && isspace((unsigned char)s[len - 1])) {
         s[len - 1] = '\0';
@@ -122,177 +75,120 @@ void trim(char *s) {
     }
 }
 
-//---------------------------------------------------------------------
-// Pass 1: Calculate label addresses (PC).
-//---------------------------------------------------------------------
-void pass1(const char *input_filename) {
-    FILE *fin = fopen(input_filename, "r");
-    if (!fin) {
-        perror("Error opening input file");
-        exit(1);
+// ----------------------------------------------------------------------
+// Decide if a line (minus label definition / comment / directive)
+// is a valid Tinker instruction or recognized macro.
+// We'll just do a quick "first token in known set" approach.
+// ----------------------------------------------------------------------
+static int is_valid_instruction(const char *line) {
+    // Extract first token
+    char mnemonic[32];
+    if (sscanf(line, "%31s", mnemonic) != 1) {
+        return 0;
     }
-    
-    typedef enum { NONE, CODE, DATA } Section;
-    Section currentSection = NONE;
-    
-    // The example specs mention that code starts at 0x1000
-    int programCounter = 0x1000;
-    char line[1024];
-    
-    while (fgets(line, sizeof(line), fin)) {
-        line[strcspn(line, "\n")] = '\0';  // remove newline
-        trim(line);
-        if (strlen(line) == 0) {
-            continue;
-        }
-        
-        // Skip comment lines
-        if (line[0] == ';') {
-            continue;
-        }
-        
-        // Check for directives (.code/.data)
-        if (line[0] == '.') {
-            if (strncmp(line, ".code", 5) == 0) {
-                currentSection = CODE;
-            } else if (strncmp(line, ".data", 5) == 0) {
-                currentSection = DATA;
-            }
-            continue;
-        }
-        
-        // Process label definitions (e.g. ":LABEL")
-        if (line[0] == ':') {
-            // example: ":L1" -> store programCounter
-            char label[50];
-            sscanf(line + 1, "%49s", label);
-            add_label(label, programCounter);
-            continue;
-        }
-        
-        // In CODE section, each instruction is 4 bytes
-        // BUT if the line is a macro that expands into multiple lines, we must account for that
-        if (currentSection == CODE) {
-            // Validate the line as either a known instruction or a recognized macro
-            if (is_valid_instruction(line)) {
-                // Check if it is one of the macros that expand to multiple instructions
-                if (match_regex("ld\\s+r[0-9]+,\\s+[0-9]+", line)) {
-                    // "ld" expands into 12 instructions => 12 * 4 = 48 bytes
-                    programCounter += 48;
-                }
-                else if (match_regex("push\\s+r[0-9]+", line)) {
-                    // "push" expands into 2 instructions => 8 bytes
-                    programCounter += 8;
-                }
-                else if (match_regex("pop\\s+r[0-9]+", line)) {
-                    // "pop" expands into 2 instructions => 8 bytes
-                    programCounter += 8;
-                }
-                else {
-                    // Normal instruction => 4 bytes
-                    programCounter += 4;
-                }
-            }
-            else {
-                // Not recognized as a valid instruction => error out
-                fprintf(stderr, "Error: Invalid instruction or macro in pass1: %s\n", line);
-                exit(EXIT_FAILURE);
-            }
-        }
-        else if (currentSection == DATA) {
-            // Each data item is 8 bytes
-            programCounter += 8;
+
+    // List of recognized Tinker instructions + macros
+    const char *ops[] = {
+        // integer arithmetic
+        "add", "addi", "sub", "subi", "mul", "div",
+        // logic
+        "and", "or", "xor", "not", "shftr", "shftri", "shftl", "shftli",
+        // control
+        "br", "brr", "brnz", "call", "return", "brgt",
+        // floating
+        "addf", "subf", "mulf", "divf",
+        // data movement
+        "mov",
+        // privileged
+        "halt",
+        // recognized macros:
+        "in", "out", "clr", "ld", "push", "pop"
+    };
+
+    int count = (int)(sizeof(ops) / sizeof(ops[0]));
+    for (int i = 0; i < count; i++) {
+        if (strcmp(mnemonic, ops[i]) == 0) {
+            return 1; // recognized
         }
     }
-    
-    fclose(fin);
+    return 0; // not recognized
 }
 
-//---------------------------------------------------------------------
-// Macro expansion helpers
-//---------------------------------------------------------------------
-void expandIn(int rD, int rS, FILE* output) {
-    // in rD, rS -> priv rD, rS, 0, 3
-    fprintf(output, "\tpriv r%d, r%d, r0, 3\n", rD, rS);
+// ----------------------------------------------------------------------
+// Macro expansions
+// ----------------------------------------------------------------------
+
+// in rD, rS => priv rD, rS, r0, 3
+static void expandIn(int rD, int rS, FILE *fout) {
+    fprintf(fout, "\tpriv r%d, r%d, r0, 3\n", rD, rS);
 }
 
-void expandOut(int rD, int rS, FILE* output) {
-    // out rD, rS -> priv rD, rS, 0, 4
-    fprintf(output, "\tpriv r%d, r%d, r0, 4\n", rD, rS);
+// out rD, rS => priv rD, rS, r0, 4
+static void expandOut(int rD, int rS, FILE *fout) {
+    fprintf(fout, "\tpriv r%d, r%d, r0, 4\n", rD, rS);
 }
 
-void expandClr(int rD, FILE* output) {
-    // clr rD -> xor rD, rD, rD
-    fprintf(output, "\txor r%d, r%d, r%d\n", rD, rD, rD);
+// clr rD => xor rD, rD, rD
+static void expandClr(int rD, FILE *fout) {
+    fprintf(fout, "\txor r%d, r%d, r%d\n", rD, rD, rD);
 }
 
-void expandHalt(FILE* output) {
-    // halt -> priv r0, r0, r0, 0
-    fprintf(output, "\tpriv r0, r0, r0, 0\n");
+// halt => priv r0, r0, r0, 0
+static void expandHalt(FILE *fout) {
+    fprintf(fout, "\tpriv r0, r0, r0, 0\n");
 }
 
-void expandPush(int rD, FILE* output) {
-    // push rD -> mov rD, (r31)(0); subi r31, r31, 8
-    fprintf(output, "\tmov (r31)(0), r%d\n", rD);  // store rD at [r31+0]
-    fprintf(output, "\tsubi r31, 8\n");           // decrement stack pointer by 8
+// push rD => mov (r31)(0), rD; subi r31, 8
+static void expandPush(int rD, FILE *fout) {
+    fprintf(fout, "\tmov (r31)(0), r%d\n", rD);
+    fprintf(fout, "\tsubi r31, 8\n");
 }
 
-void expandPop(int rD, FILE* output) {
-    // pop rD -> addi r31, 8; mov rD, (r31)(0)
-    fprintf(output, "\taddi r31, 8\n");
-    fprintf(output, "\tmov r%d, (r31)(0)\n", rD);
+// pop rD => addi r31, 8; mov rD, (r31)(0)
+static void expandPop(int rD, FILE *fout) {
+    fprintf(fout, "\taddi r31, 8\n");
+    fprintf(fout, "\tmov r%d, (r31)(0)\n", rD);
 }
 
-void expandLd(int rD, uint64_t L, FILE* output) {
-    // Example approach: break the 64-bit immediate L into chunks and shift them in.
-    // Adjust if your actual Tinker microcode or instructions differ.
-    //
-    // For demonstration, we do a 12-instruction expansion:
-    //  1) xor r0, r0, r0   (just to have a zero in r0)
-    //  2) addi rD, r0, (top bits)
-    //  3) shftli rD, #bits
-    //  4) addi rD, rD, (next bits)
-    //  5) shftli rD, #bits
-    //  ...
-    // This depends on your exact Tinker instructions and how you'd prefer to do it.
-    //
-    fprintf(output, "\txor r0, r0, r0\n");
+// ld rD, <64-bit literal> => expand into ~12 instructions
+static void expandLd(int rD, uint64_t L, FILE *fout) {
+    // For example, do:
+    fprintf(fout, "\txor r0, r0, r0\n");
 
-    // Top 12 bits => ((L >> 52) & 0xFFF)
-    fprintf(output, "\taddi r%d, r0, %llu\n", rD, (L >> 52) & 0xFFF);
-    fprintf(output, "\tshftli r%d, 12\n", rD);
+    // top 12 bits => (L >> 52) & 0xFFF
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L >> 52) & 0xFFF);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
 
-    // Next 12 bits => ((L >> 40) & 0xFFF)
-    fprintf(output, "\taddi r%d, r%d, %llu\n", rD, rD, (L >> 40) & 0xFFF);
-    fprintf(output, "\tshftli r%d, 12\n", rD);
+    // next 12 => (L >> 40) & 0xFFF
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L >> 40) & 0xFFF);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
 
-    // Next 12 bits => ((L >> 28) & 0xFFF)
-    fprintf(output, "\taddi r%d, r%d, %llu\n", rD, rD, (L >> 28) & 0xFFF);
-    fprintf(output, "\tshftli r%d, 12\n", rD);
+    // next 12 => (L >> 28) & 0xFFF
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L >> 28) & 0xFFF);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
 
-    // Next 12 bits => ((L >> 16) & 0xFFF)
-    fprintf(output, "\taddi r%d, r%d, %llu\n", rD, rD, (L >> 16) & 0xFFF);
-    fprintf(output, "\tshftli r%d, 4\n", rD);
+    // next 12 => (L >> 16) & 0xFFF
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L >> 16) & 0xFFF);
+    fprintf(fout, "\tshftli r%d, 4\n", rD);
 
-    // Next 12 bits => ((L >> 4) & 0xFFF)
-    fprintf(output, "\taddi r%d, r%d, %llu\n", rD, rD, (L >> 4) & 0xFFF);
-    fprintf(output, "\tshftli r%d, 4\n", rD);
+    // next 12 => (L >> 4) & 0xFFF
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L >> 4) & 0xFFF);
+    fprintf(fout, "\tshftli r%d, 4\n", rD);
 
-    // Last 4 bits => (L & 0xF)
-    fprintf(output, "\taddi r%d, r%d, %llu\n", rD, rD, (L & 0xF));
+    // last 4 => (L & 0xF)
+    fprintf(fout, "\taddi r%d, %llu\n", rD, (L & 0xF));
 }
 
-//---------------------------------------------------------------------
-// parseMacro(): Extract parameters from a macro line and call expansions.
-//---------------------------------------------------------------------
-void parseMacro(const char *line, FILE *output) {
+// Parse line to see if it's a known macro: e.g. "in rX, rY" => expandIn(...)
+static void parseMacro(const char *line, FILE *fout) {
     char op[16];
     int rD, rS;
-    uint64_t immediate;
+    uint64_t imm;
 
-    // Grab the first token (the operation: in/out/clr/halt/etc.)
+    // Attempt to read the first token (the operation)
     if (sscanf(line, "%15s", op) != 1) {
-        fprintf(stderr, "Error: Could not read macro operation from line: %s\n", line);
+        // can't parse
+        fprintf(stderr, "parseMacro: cannot read opcode from line: %s\n", line);
         return;
     }
 
@@ -301,9 +197,9 @@ void parseMacro(const char *line, FILE *output) {
         if (sscanf(line, "in r%d , r%d", &rD, &rS) == 2 ||
             sscanf(line, "in r%d r%d", &rD, &rS) == 2)
         {
-            expandIn(rD, rS, output);
+            expandIn(rD, rS, fout);
         } else {
-            fprintf(stderr, "Error parsing 'in' macro: %s\n", line);
+            fprintf(stderr, "Error parsing in macro: %s\n", line);
         }
     }
     else if (strcmp(op, "out") == 0) {
@@ -311,175 +207,266 @@ void parseMacro(const char *line, FILE *output) {
         if (sscanf(line, "out r%d , r%d", &rD, &rS) == 2 ||
             sscanf(line, "out r%d r%d", &rD, &rS) == 2)
         {
-            expandOut(rD, rS, output);
+            expandOut(rD, rS, fout);
         } else {
-            fprintf(stderr, "Error parsing 'out' macro: %s\n", line);
+            fprintf(stderr, "Error parsing out macro: %s\n", line);
         }
     }
     else if (strcmp(op, "clr") == 0) {
         // clr rD
         if (sscanf(line, "clr r%d", &rD) == 1) {
-            expandClr(rD, output);
+            expandClr(rD, fout);
         } else {
-            fprintf(stderr, "Error parsing 'clr' macro: %s\n", line);
+            fprintf(stderr, "Error parsing clr macro: %s\n", line);
         }
     }
     else if (strcmp(op, "halt") == 0) {
-        // halt has no parameters
-        expandHalt(output);
+        // no params
+        expandHalt(fout);
     }
     else if (strcmp(op, "push") == 0) {
         // push rD
         if (sscanf(line, "push r%d", &rD) == 1) {
-            expandPush(rD, output);
+            expandPush(rD, fout);
         } else {
-            fprintf(stderr, "Error parsing 'push' macro: %s\n", line);
+            fprintf(stderr, "Error parsing push macro: %s\n", line);
         }
     }
     else if (strcmp(op, "pop") == 0) {
         // pop rD
         if (sscanf(line, "pop r%d", &rD) == 1) {
-            expandPop(rD, output);
+            expandPop(rD, fout);
         } else {
-            fprintf(stderr, "Error parsing 'pop' macro: %s\n", line);
+            fprintf(stderr, "Error parsing pop macro: %s\n", line);
         }
     }
     else if (strcmp(op, "ld") == 0) {
-        // ld rD, <imm64>
-        // can be either decimal or something else
-        if (sscanf(line, "ld r%d , %llu", &rD, &immediate) == 2) {
-            expandLd(rD, immediate, output);
+        // ld rD, <64-bit immediate>
+        // parse as decimal (or possibly detect "0x" yourself, if desired).
+        if (sscanf(line, "ld r%d , %llu", &rD, &imm) == 2 ||
+            sscanf(line, "ld r%d %llu", &rD, &imm) == 2)
+        {
+            expandLd(rD, imm, fout);
         } else {
-            fprintf(stderr, "Error parsing 'ld' macro: %s\n", line);
+            fprintf(stderr, "Error parsing ld macro (literal): %s\n", line);
         }
     }
     else {
-        // If it's not recognized as one of the macros above, just emit it "as is".
-        fprintf(output, "\t%s\n", line);
+        // Not recognized as a macro => just print as is, with a leading tab
+        fprintf(fout, "\t%s\n", line);
     }
 }
 
-//---------------------------------------------------------------------
-// Pass 2: Process the input again, do final expansions, label fixups, etc.
-//---------------------------------------------------------------------
-void pass2(const char *input_filename, const char *output_filename) {
-    FILE *fin = fopen(input_filename, "r");
+// ----------------------------------------------------------------------
+// Pass 1: read file, identify labels => addresses, keep track of PC.
+// Tinker typically starts at 0x1000. 
+// Macros that expand to multiple instructions => we increment PC accordingly.
+// ----------------------------------------------------------------------
+static void pass1(const char *filename) {
+    FILE *fin = fopen(filename, "r");
     if (!fin) {
-        perror("Error opening input file");
-        exit(1);
+        perror("pass1: fopen input");
+        exit(EXIT_FAILURE);
     }
 
-    FILE *fout = fopen(output_filename, "w");
-    if (!fout) {
-        perror("Error opening output file");
-        fclose(fin);
-        exit(1);
-    }
-    
+    enum { SECTION_NONE, SECTION_CODE, SECTION_DATA } section = SECTION_NONE;
+    int programCounter = 0x1000;
+
     char line[1024];
-    int in_code_section = 0;
-    
     while (fgets(line, sizeof(line), fin)) {
-        // Remove newline and trim
+        line[strcspn(line, "\n")] = '\0';
+        trim(line);
+        if (!line[0]) {
+            continue; // empty
+        }
+        // skip comments
+        if (line[0] == ';') {
+            continue;
+        }
+        // check directives
+        if (line[0] == '.') {
+            if (strncmp(line, ".code", 5) == 0) {
+                section = SECTION_CODE;
+            } else if (strncmp(line, ".data", 5) == 0) {
+                section = SECTION_DATA;
+            }
+            continue;
+        }
+        // if it's a label definition
+        if (line[0] == ':') {
+            // e.g. ":LOOP"
+            char label[50];
+            if (sscanf(line+1, "%49s", label) == 1) {
+                add_label(label, programCounter);
+            }
+            continue;
+        }
+
+        // otherwise, must be code or data
+        if (section == SECTION_CODE) {
+            // check validity
+            if (!is_valid_instruction(line)) {
+                fprintf(stderr, "pass1 error: invalid instruction: %s\n", line);
+                fclose(fin);
+                exit(EXIT_FAILURE);
+            } else {
+                // macros expansions => multiple instructions => add more than 4
+                if (strncmp(line, "ld ", 3) == 0) {
+                    programCounter += 48; // 12 instructions * 4 bytes
+                }
+                else if (strncmp(line, "push", 4) == 0) {
+                    programCounter += 8;  // 2 instructions => 8 bytes
+                }
+                else if (strncmp(line, "pop", 3) == 0) {
+                    programCounter += 8;  // 2 instructions
+                }
+                else {
+                    // normal => +4
+                    programCounter += 4;
+                }
+            }
+        }
+        else if (section == SECTION_DATA) {
+            // each data line => 8 bytes
+            programCounter += 8;
+        }
+        else {
+            // line is outside .code or .data => often a no-op or error 
+        }
+    }
+
+    fclose(fin);
+}
+
+// ----------------------------------------------------------------------
+// Pass 2: produce final file
+//   - replicate .code/.data lines
+//   - skip label definitions
+//   - macros expanded
+//   - references to :LABEL => decimal address
+// ----------------------------------------------------------------------
+static void pass2(const char *inputfile, const char *outputfile) {
+    FILE *fin = fopen(inputfile, "r");
+    if (!fin) {
+        perror("pass2: fopen input");
+        exit(EXIT_FAILURE);
+    }
+    FILE *fout = fopen(outputfile, "w");
+    if (!fout) {
+        perror("pass2: fopen output");
+        fclose(fin);
+        exit(EXIT_FAILURE);
+    }
+
+    int in_code_section = 0;
+    char line[1024];
+
+    while (fgets(line, sizeof(line), fin)) {
         line[strcspn(line, "\n")] = '\0';
         trim(line);
 
-        // Skip empty or purely comment lines
-        if (strlen(line) == 0 || line[0] == ';') {
+        if (!line[0] || line[0] == ';') {
+            // skip empty or comment
             continue;
         }
-        
-        // If we see .code, replicate in the output (once) and note we are in code
+        // pass through .code/.data
         if (strcmp(line, ".code") == 0) {
+            // if we haven't printed .code yet, do so
             if (!in_code_section) {
                 fprintf(fout, ".code\n");
                 in_code_section = 1;
             }
             continue;
         }
-        
-        // If we see .data, replicate in the output and note we left code
         if (strcmp(line, ".data") == 0) {
             fprintf(fout, ".data\n");
             in_code_section = 0;
             continue;
         }
-        
-        // If line is just a label definition, skip directly outputting it
-        // because we want the label to be "absorbed" into final expansions,
-        // or we might want to replicate it in output. In some specs, you might
-        // want to preserve the label as an assembly label. 
-        if (line[0] == ':' && strlen(line) > 1) {
-            // e.g. ":L1"
-            // We'll skip writing it out directly as text. 
+        // skip label definitions entirely
+        if (line[0] == ':') {
             continue;
         }
-        
-        // If there's a label reference in the line, e.g. "ld r5, :LABEL"
-        // we want to replace ":LABEL" with the actual address in hex.
-        char *colon_pos = strstr(line, ":");
-        if (colon_pos) {
-            // We expect something like "... :LABEL"
-            // Extract label text:
-            char label[50];
-            if (sscanf(colon_pos + 1, "%49s", label) == 1) {
-                LabelAddress *entry = find_label(label);
+
+        // if there's a reference to :LABEL, replace it with decimal
+        char *colon = strchr(line, ':');
+        if (colon) {
+            char labelName[50];
+            if (sscanf(colon + 1, "%49s", labelName) == 1) {
+                LabelAddress *entry = find_label(labelName);
                 if (entry) {
-                    // Overwrite the colon with a null terminator
-                    // so we can keep the portion before the label, then re-append
-                    // the resolved address in hex.
-                    *colon_pos = '\0';
-
-                    // Build output with address. Use 0x%X or 0x%08X, etc.
+                    // cut off the line at the colon
+                    *colon = '\0';
+                    // then append the label's decimal address
+                    // e.g. "... 4096"
                     char buffer[1024];
-                    snprintf(buffer, sizeof(buffer), "\t%s0x%X", line, entry->address);
-
+                    snprintf(buffer, sizeof(buffer),
+                             "\t%s%d", line, entry->address);
                     fprintf(fout, "%s\n", buffer);
+                    continue;
                 } else {
-                    // If label not found, just warn and emit line unchanged
-                    fprintf(stderr, "Warning: Label '%s' not found.\n", label);
+                    // label not found
+                    fprintf(stderr, "Warning: label '%s' not found.\n", labelName);
                     fprintf(fout, "\t%s\n", line);
+                    continue;
                 }
             }
-            else {
-                // Could not parse label after the colon
-                fprintf(fout, "\t%s\n", line);
-            }
         }
-        else {
-            // If the line is recognized as a macro that we expand, expand it
-            if (match_regex("^(in|out|clr|halt|push|pop|ld)\\b", line)) {
-                parseMacro(line, fout);
+
+        // If line is recognized macro => expand
+        if (is_valid_instruction(line)) {
+            // check first token 
+            char firstWord[16];
+            if (sscanf(line, "%15s", firstWord) == 1) {
+                if (!strcmp(firstWord, "in")   ||
+                    !strcmp(firstWord, "out")  ||
+                    !strcmp(firstWord, "clr")  ||
+                    !strcmp(firstWord, "ld")   ||
+                    !strcmp(firstWord, "push") ||
+                    !strcmp(firstWord, "pop")  ||
+                    !strcmp(firstWord, "halt"))
+                {
+                    parseMacro(line, fout);
+                } else {
+                    // normal instruction
+                    fprintf(fout, "\t%s\n", line);
+                }
             } else {
-                // Otherwise just emit the line as is
+                // fallback
                 fprintf(fout, "\t%s\n", line);
             }
+        } else {
+            // not recognized => print as is
+            fprintf(fout, "\t%s\n", line);
         }
     }
-    
+
     fclose(fin);
     fclose(fout);
 }
 
-//---------------------------------------------------------------------
-// main()
-//---------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// main
+// ----------------------------------------------------------------------
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <inputfile> <outputfile>\n", argv[0]);
         return 1;
     }
-    // First pass -> compute addresses of labels
+
+    // pass1 => gather labels / addresses
     pass1(argv[1]);
 
-    // Second pass -> expand macros, resolve label references
+    // pass2 => expand macros, fix label references, produce final .tk
     pass2(argv[1], argv[2]);
 
-    // Optional: debugging print of label-address pairs
-    // LabelAddress *entry, *tmp;
-    // HASH_ITER(hh, hashmap, entry, tmp) {
-    //     printf("Label: %s, Address: 0x%X\n", entry->label, entry->address);
-    // }
+    // optional: see what labels we found
+    /*
+    LabelAddress *e, *tmp;
+    HASH_ITER(hh, hashmap, e, tmp) {
+        printf("Label: %s => %d\n", e->label, e->address);
+    }
+    */
 
     free_hashmap();
     return 0;

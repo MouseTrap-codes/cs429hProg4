@@ -1,0 +1,13 @@
+.code 
+    clr r0 
+; the above line is a macro, it sets the value of register r0 to 0! 
+    ld r5, :L1 
+    br r5 
+; the above two instructions are for illustration only 
+.code 
+:L1 
+    in r3, r4
+    push r1
+    pop r1
+    ld r1, 18446744073709551615ULL
+; the above line is also a macro!
