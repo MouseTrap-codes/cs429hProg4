@@ -1,0 +1,8 @@
+.code
+    in r4, r8
+    ld r12, 231268
+:L1
+    out r12, r13
+    ld r19, :L1
+    push r1
+    pop r2
