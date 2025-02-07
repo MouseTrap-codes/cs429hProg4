@@ -9,5 +9,5 @@
     in r3, r4
     push r1
     pop r1
-    ld r1, 18446744073709551615ULL
+    ld r1, 18446744073709551615
 ; the above line is also a macro!
