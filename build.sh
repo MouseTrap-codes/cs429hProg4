@@ -1,0 +1,1 @@
+gcc -o hw4 main.c -I uthash-master/src
