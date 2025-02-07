@@ -182,39 +182,50 @@ static void expandPush(int rD, FILE *fout) {
 }
 static void expandPop(int rD, FILE *fout) {
     fprintf(fout, "\tmov r%d, (r31)(0)\n", rD);
-    fprintf(fout, "\taddi r31, 8\n", rD);
+    fprintf(fout, "\taddi r31, 8\n");
 }
 
 /******************************************************************************
  * expandLd: Expand an ld macro into 12 instructions that build a 64-bit immediate.
+ * The expansion produces:
+ *
+ *   xor rX, rX, rX
+ *   addi rX, <top12>
+ *   shftli rX, 12
+ *   addi rX, <mid12a>
+ *   shftli rX, 12
+ *   addi rX, <mid12b>
+ *   shftli rX, 12
+ *   addi rX, <mid12c>
+ *   shftli rX, 12
+ *   addi rX, <mid4>
+ *   shftli rX, 4
+ *   addi rX, <last4>
+ *
+ * All immediates are printed in decimal.
  ******************************************************************************/
 static void expandLd(int rD, uint64_t L, FILE *fout) {
-    // Build the 64-bit immediate in rD using shifting.
-    fprintf(fout, "\txor r0, r0, r0\n");
+    // Zero the target register.
+    fprintf(fout, "\txor r%d, r%d, r%d\n", rD, rD, rD);
 
     unsigned long long top12  = (L >> 52) & 0xFFF;
     unsigned long long mid12a = (L >> 40) & 0xFFF;
     unsigned long long mid12b = (L >> 28) & 0xFFF;
     unsigned long long mid12c = (L >> 16) & 0xFFF;
     unsigned long long mid4   = (L >> 4) & 0xFFF;
-    unsigned long long last4  =  L       & 0xF;
+    unsigned long long last4  = L & 0xF;
 
-    fprintf(fout, "\taddi r%d, r0, %llu\n", rD, top12);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, top12);
     fprintf(fout, "\tshftli r%d, 12\n", rD);
-
-    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12a);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, mid12a);
     fprintf(fout, "\tshftli r%d, 12\n", rD);
-
-    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12b);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, mid12b);
     fprintf(fout, "\tshftli r%d, 12\n", rD);
-
-    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid12c);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, mid12c);
+    fprintf(fout, "\tshftli r%d, 12\n", rD);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, mid4);
     fprintf(fout, "\tshftli r%d, 4\n", rD);
-
-    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, mid4);
-    fprintf(fout, "\tshftli r%d, 4\n", rD);
-
-    fprintf(fout, "\taddi r%d, r%d, %llu\n", rD, rD, last4);
+    fprintf(fout, "\taddi r%d, %llu\n", rD, last4);
 }
 
 /******************************************************************************
@@ -233,7 +244,7 @@ static void parseMacro(const char *line, FILE *fout) {
 
     if (strcmp(op, "ld") == 0) {
         // Pattern: optional whitespace, ld, whitespace, r<number>, optional comma, whitespace,
-        // then an immediate (which may have a "0x" prefix) in one capture group.
+        // then an immediate (possibly with "0x" prefix) in one capture group.
         const char *pattern = "^[[:space:]]*ld[[:space:]]+r([0-9]+)[[:space:]]*,?[[:space:]]*((0x)?[0-9a-fA-F]+)[[:space:]]*$";
         if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
             fprintf(stderr, "Could not compile regex for ld\n");

@@ -1,0 +1,20 @@
+.code
+	xor r0, r0, r0
+	xor r0, r0, r0
+	addi r5, r0, 0
+	shftli r5, 12
+	addi r5, r5, 0
+	shftli r5, 12
+	addi r5, r5, 0
+	shftli r5, 12
+	addi r5, r5, 0
+	shftli r5, 4
+	addi r5, r5, 259
+	shftli r5, 4
+	addi r5, r5, 8
+	br r5
+	priv r3, r4, r0, 3
+	subi r31, 8
+	mov (r31)(0), r1
+	mov r1, (r31)(0)
+	addi r31, 8
