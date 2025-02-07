@@ -1,5 +1,5 @@
 .code
-	clr r0
+	xor r0, r0, r0
 	ld r5, 4108
 	br r5
-	halt
+	priv r0, r0, r0, 0
